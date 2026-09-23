@@ -175,12 +175,42 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
 </head>
 <body>
 <div id="app"></div>
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js";
+import {
+  getFirestore, collection, doc, setDoc, deleteDoc, getDocs, onSnapshot,
+  query, where, writeBatch
+} from "https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js";
+import {
+  getAuth, onAuthStateChanged, signInAnonymously,
+  signInWithEmailAndPassword, signOut
+} from "https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js";
+
+// ▼▼▼ 自分のFirebaseプロジェクトの設定に書き換えてください ▼▼▼
+// Firebaseコンソール → プロジェクトの設定(歯車アイコン) → 全般 → 「マイアプリ」→ SDK の設定と構成 でコピーできます
+const firebaseConfig = {
+  apiKey: "AIzaSyDaNve7I6loJ6UHy_GD3XYexl8d4_HSNfQ",
+  authDomain: "marksheet-app-64b36.firebaseapp.com",
+  projectId: "marksheet-app-64b36",
+  storageBucket: "marksheet-app-64b36.firebasestorage.app",
+  messagingSenderId: "22038088035",
+  appId: "1:22038088035:web:bf8b01018fcf4c95cb6b56",
+  measurementId: "G-8VKWE3TB38"
+};
+// ▲▲▲ ここまで ▲▲▲
+
+const fbApp = initializeApp(firebaseConfig);
+const db = getFirestore(fbApp);
+const auth = getAuth(fbApp);
+
 (function(){
   "use strict";
 
-  var LS = { EXAMS:'msct_exams_v1', SUBS:'msct_submissions_v1', DRAFTS:'msct_drafts_v1', USER:'msct_user_v1' };
-  var ADMIN_KEY = 'にじいろでとくべつなゆにこーん';
+  var LS = { USER:'msct_user_v1' }; // 「今どのキーでログイン中か」だけを端末に記憶する（データ本体はFirestore）
+  // 管理者用の固定メールアドレス。Firebaseコンソールの Authentication でこのメールアドレスの
+  // ユーザーを1人作成し、そのときのパスワードが「共有の管理者キー」になる（複数人で共同管理できる）。
+  // 元のアプリのように文字列そのものをソースに書かないので、キーはソースを見ても分からない。
+  var ADMIN_EMAIL = 'admin@marksheet.local';
   var COLORS = ['あおくて','みどりいろで','あかくて'];
   var ADJECTIVES = ['ちいさい','まぶしい','しずかな','かわいい','するどい','かたい','あぶない','ぶきような','とうめいな','いけてる','えらい','まじめな'];
   var ANIMALS = ['ぞう','きりん','ぱんだ','さい','いたち','ぺんぎん','ごりら','いるか','ふくろう','くらげ','きつつき','はむすたー'];
@@ -242,13 +272,97 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
     };
   }
 
-  // ---- data store helpers ----
-  function getExams(){ return loadJSON(LS.EXAMS, []); }
-  function saveExams(list){ saveJSON(LS.EXAMS, list); }
-  function getSubs(){ return loadJSON(LS.SUBS, []); }
-  function saveSubs(list){ saveJSON(LS.SUBS, list); }
-  function getDrafts(){ return loadJSON(LS.DRAFTS, {}); }
-  function saveDrafts(obj){ saveJSON(LS.DRAFTS, obj); }
+  // ---- data store helpers（Firestoreをローカルにミラーしておき、既存コードからは今までどおり同期関数として使う） ----
+  var examsCache = [];
+  var subsCache = [];
+  var draftsCache = {}; // key: studentKey+'__'+examId -> answers
+  var unsubscribers = [];
+
+  function stopAllSubscriptions(){
+    unsubscribers.forEach(function(fn){ try{ fn(); }catch(e){} });
+    unsubscribers = [];
+  }
+
+  // 管理者: 模試は全件、提出結果は全件購読する（統計画面のため）。下書きは生徒のプライバシーに配慮し購読しない。
+  function subscribeAdminData(){
+    stopAllSubscriptions();
+    unsubscribers.push(onSnapshot(collection(db,'exams'), function(snap){
+      examsCache = snap.docs.map(function(d){ return d.data(); });
+      render();
+    }, function(err){ console.error(err); showToast('模試データの取得に失敗しました'); }));
+    unsubscribers.push(onSnapshot(collection(db,'submissions'), function(snap){
+      subsCache = snap.docs.map(function(d){ return d.data(); });
+      render();
+    }, function(err){ console.error(err); showToast('提出データの取得に失敗しました'); }));
+  }
+
+  // 生徒: 公開中の模試・自分の提出結果・自分の下書きだけを購読する
+  function subscribeStudentData(key){
+    stopAllSubscriptions();
+    unsubscribers.push(onSnapshot(query(collection(db,'exams'), where('status','==','published')), function(snap){
+      examsCache = snap.docs.map(function(d){ return d.data(); });
+      render();
+    }, function(err){ console.error(err); showToast('模試データの取得に失敗しました'); }));
+    unsubscribers.push(onSnapshot(query(collection(db,'submissions'), where('studentKey','==',key)), function(snap){
+      subsCache = snap.docs.map(function(d){ return d.data(); });
+      render();
+    }, function(err){ console.error(err); showToast('提出データの取得に失敗しました'); }));
+    unsubscribers.push(onSnapshot(query(collection(db,'drafts'), where('studentKey','==',key)), function(snap){
+      var next = {};
+      snap.docs.forEach(function(d){ var v=d.data(); next[v.studentKey+'__'+v.examId] = v.answers; });
+      draftsCache = next;
+      render();
+    }, function(err){ console.error(err); showToast('途中保存データの取得に失敗しました'); }));
+  }
+
+  function getExams(){ return examsCache; }
+  function saveExams(list){
+    var prevIds = examsCache.map(function(e){ return e.id; });
+    var nextIds = list.map(function(e){ return e.id; });
+    examsCache = list; // 楽観的にローカルへ反映（少し遅れてonSnapshotが確定値で上書きする）
+    list.forEach(function(e){
+      setDoc(doc(db,'exams',e.id), e).catch(function(err){ console.error(err); showToast('模試の保存に失敗しました'); });
+    });
+    prevIds.filter(function(id){ return nextIds.indexOf(id)===-1; }).forEach(function(id){
+      deleteDoc(doc(db,'exams',id)).catch(function(err){ console.error(err); });
+    });
+  }
+  function getSubs(){ return subsCache; }
+  function saveSubs(list){
+    var prevIds = subsCache.map(function(s){ return s.id; });
+    var nextIds = list.map(function(s){ return s.id; });
+    subsCache = list;
+    list.forEach(function(s){
+      setDoc(doc(db,'submissions',s.id), s).catch(function(err){ console.error(err); showToast('提出結果の保存に失敗しました'); });
+    });
+    prevIds.filter(function(id){ return nextIds.indexOf(id)===-1; }).forEach(function(id){
+      deleteDoc(doc(db,'submissions',id)).catch(function(err){ console.error(err); });
+    });
+  }
+  function getDrafts(){ return draftsCache; }
+  function saveDrafts(obj){
+    var prevKeys = Object.keys(draftsCache);
+    var nextKeys = Object.keys(obj);
+    draftsCache = obj;
+    nextKeys.forEach(function(k){
+      var idx = k.indexOf('__');
+      var studentKey = k.slice(0,idx), examId = k.slice(idx+2);
+      setDoc(doc(db,'drafts',k), {studentKey:studentKey, examId:examId, answers:obj[k], updatedAt:Date.now()})
+        .catch(function(err){ console.error(err); });
+    });
+    prevKeys.filter(function(k){ return nextKeys.indexOf(k)===-1; }).forEach(function(k){
+      deleteDoc(doc(db,'drafts',k)).catch(function(err){ console.error(err); });
+    });
+  }
+  // 模試削除時、他の生徒の下書きも含めて確実に削除する（管理者は下書きを購読していないため直接クエリで削除する）
+  function deleteDraftsForExam(examId){
+    return getDocs(query(collection(db,'drafts'), where('examId','==',examId))).then(function(snap){
+      if(snap.empty) return;
+      var batch = writeBatch(db);
+      snap.docs.forEach(function(d){ batch.delete(d.ref); });
+      return batch.commit();
+    }).catch(function(err){ console.error(err); });
+  }
 
   function allQuestionsOf(exam){
     var qs = [];
@@ -454,26 +568,14 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
 
   // ---- state ----
   var state = {
-    screen:'login',
-    user: loadJSON(LS.USER, null),
+    screen:'loading',
+    user: null,
     keyInput:'', recoverEmail:'', recoverResult:null, error:null,
     studentTab:'list', adminTab:'exams',
     currentExamId:null, currentAnswers:null, currentSubmission:null, resultOrigin:'list',
     editingExam:null, adminStatsExamId:null, adminDeleteYear:null,
     modal:null, toast:null
   };
-  if(state.user){
-    if(state.user.type==='admin'){
-      state.screen = 'adminHome';
-    } else if(state.user.type==='student' && VALID_STUDENT_KEYS.has(state.user.key)){
-      state.screen = 'studentHome';
-    } else {
-      // 以前のバージョンで保存された無効なキーは無効化する
-      localStorage.removeItem(LS.USER);
-      state.user = null;
-      state.screen = 'login';
-    }
-  }
 
   function setState(patch){ Object.assign(state, patch); render(); }
 
@@ -845,7 +947,9 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
   function render(){
     var app = document.getElementById('app');
     var html;
-    if(!state.user){
+    if(state.screen==='loading'){
+      html = '<div class="login-hero"><h1>マークシート自動採点</h1><p class="sub">読み込み中…</p></div>';
+    } else if(!state.user){
       html = state.screen==='keyRecover' ? renderKeyRecover() : renderLogin();
     } else if(state.user.type==='student'){
       if(state.screen==='examAnswer') html = renderAnswerScreen();
@@ -931,19 +1035,20 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
     doLogin: function(){
       var key = (state.keyInput||'').trim();
       if(!key){ setState({error:'ログインキーを入力してください'}); return; }
-      if(key===ADMIN_KEY){
-        var admin = {type:'admin', key:key};
-        saveJSON(LS.USER, admin);
-        setState({user:admin, screen:'adminHome', adminTab:'exams', error:null, keyInput:''});
-        return;
-      }
-      if(!VALID_STUDENT_KEYS.has(key)){
-        setState({error:'ログインキーが正しくありません。伝えられたキーをそのまま、正確に入力してください。'});
-        return;
-      }
-      var student = {type:'student', key:key};
-      saveJSON(LS.USER, student);
-      setState({user:student, screen:'studentHome', studentTab:'list', error:null, keyInput:''});
+      setState({error:null});
+      // まず「共有の管理者キー」として試す（Firebase側で検証。合っていれば管理者としてサインインする）。
+      // 一致しなければ、生徒キーの一覧と照合する。
+      signInWithEmailAndPassword(auth, ADMIN_EMAIL, key).catch(function(){
+        if(!VALID_STUDENT_KEYS.has(key)){
+          setState({error:'ログインキーが正しくありません。伝えられたキーをそのまま、正確に入力してください。'});
+          return;
+        }
+        var student = {type:'student', key:key};
+        saveJSON(LS.USER, student);
+        subscribeStudentData(key);
+        setState({user:student, screen:'studentHome', studentTab:'list', error:null, keyInput:''});
+      });
+      // 管理者キーとして成功した場合はonAuthStateChangedが検知してadminHomeへ遷移する
     },
     showRecover: function(){ setState({screen:'keyRecover', error:null, recoverResult:null}); },
     backToLogin: function(){ setState({screen:'login', recoverResult:null, error:null}); },
@@ -961,11 +1066,19 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
     useRecoveredKey: function(){
       var student = {type:'student', key: state.recoverResult.text};
       saveJSON(LS.USER, student);
+      subscribeStudentData(student.key);
       setState({user:student, screen:'studentHome', studentTab:'list', recoverResult:null, recoverEmail:''});
     },
     logout: function(){
       localStorage.removeItem(LS.USER);
-      setState({user:null, screen:'login', keyInput:''});
+      stopAllSubscriptions();
+      examsCache = []; subsCache = []; draftsCache = {};
+      if(state.user && state.user.type==='admin'){
+        signOut(auth).catch(function(){});
+        // signOut後はonAuthStateChangedが検知し、匿名サインインしてログイン画面に戻す
+      } else {
+        setState({user:null, screen:'login', keyInput:''});
+      }
     },
     setStudentTab: function(el){ setState({studentTab: el.dataset.tab}); },
     setAdminTab: function(el){ setState({adminTab: el.dataset.tab}); },
@@ -1035,9 +1148,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
       openConfirm({ message:'この模試を削除しますか？関連する提出結果・途中保存もすべて削除されます。', danger:true, confirmLabel:'削除する', onConfirm:function(){
         saveExams(getExams().filter(function(e){ return e.id!==eid; }));
         saveSubs(getSubs().filter(function(s){ return s.examId!==eid; }));
-        var drafts = getDrafts();
-        Object.keys(drafts).forEach(function(k){ if(k.indexOf('__'+eid)===k.length-('__'+eid).length) delete drafts[k]; });
-        saveDrafts(drafts);
+        deleteDraftsForExam(eid);
         render();
       }});
     },
@@ -1119,14 +1230,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
         var removedIds = exams.filter(function(e){ return e.year===y; }).map(function(e){ return e.id; });
         saveExams(exams.filter(function(e){ return e.year!==y; }));
         saveSubs(getSubs().filter(function(s){ return removedIds.indexOf(s.examId)===-1; }));
-        var drafts = getDrafts();
-        Object.keys(drafts).forEach(function(k){
-          for(var i=0;i<removedIds.length;i++){
-            var suffix = '__'+removedIds[i];
-            if(k.indexOf(suffix)===k.length-suffix.length){ delete drafts[k]; break; }
-          }
-        });
-        saveDrafts(drafts);
+        removedIds.forEach(function(eid){ deleteDraftsForExam(eid); });
         setState({adminDeleteYear:null});
       }});
     },
@@ -1161,6 +1265,42 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
   });
 
   render();
+
+  // ---- 認証ブートストラップ ----
+  // Firebaseの認証状態が確定するたびに呼ばれる。管理者はメール/パスワードでの実サインイン、
+  // 生徒は匿名サインイン＋端末に記憶したキーで判定する。
+  onAuthStateChanged(auth, function(user){
+    if(!user){
+      stopAllSubscriptions();
+      examsCache = []; subsCache = []; draftsCache = {};
+      var savedUser = loadJSON(LS.USER, null);
+      var expectingRestore = !!(savedUser && savedUser.type==='student' && VALID_STUDENT_KEYS.has(savedUser.key));
+      state.user = null;
+      if(!expectingRestore && state.screen!=='keyRecover'){
+        state.screen = 'login';
+      }
+      render();
+      signInAnonymously(auth).catch(function(err){ console.error(err); showToast('サーバーへの接続に失敗しました'); });
+      return;
+    }
+    if(user.isAnonymous===false){
+      // メール/パスワードでの実サインイン＝管理者
+      var admin = {type:'admin'};
+      saveJSON(LS.USER, admin);
+      subscribeAdminData();
+      setState({user:admin, screen:'adminHome', adminTab:'exams', error:null});
+    } else {
+      // 匿名サインイン。端末に記憶済みの生徒キーがあれば自動的に復帰する
+      var saved = loadJSON(LS.USER, null);
+      if(saved && saved.type==='student' && VALID_STUDENT_KEYS.has(saved.key)){
+        subscribeStudentData(saved.key);
+        setState({user:saved, screen:'studentHome', studentTab:'list'});
+      } else {
+        if(state.screen==='loading') state.screen = 'login';
+        render();
+      }
+    }
+  });
 })();
 </script>
 </body>
