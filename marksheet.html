@@ -323,20 +323,32 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
       });
     });
 
-    // 完全解答（並び順は問わず、同じ値の組み合わせであれば正解とする）
+    // 完全解答
+    // mode:'combo'（既定・後方互換）＝ 並び順は問わず、登録した組み合わせのどれかと一致すれば正解
+    // mode:'individual' ＝ 各問が自分自身の正解を持ち、グループ内の全問に正解した場合だけ配点を加算（部分点なし）
     Object.keys(completeGroupQIds).forEach(function(gid){
       var group = groupMap[gid];
       var qids = completeGroupQIds[gid];
       var pts = group ? (Number(group.points)||0) : 0;
       max += pts;
-      var combo = qids.map(function(qid){ return answers[qid]; });
-      var anyNull = combo.some(function(v){ return v==null; });
-      var sortedCombo = anyNull ? null : combo.slice().sort(function(a,b){ return a-b; });
-      var matched = !!group && !anyNull && (group.combos||[]).some(function(c){
-        if(c.length!==combo.length) return false;
-        var sortedC = c.slice().sort(function(a,b){ return a-b; });
-        return sortedC.every(function(v,i){ return v===sortedCombo[i]; });
-      });
+      var mode = (group && group.mode==='individual') ? 'individual' : 'combo';
+      var matched, anyNull;
+      if(mode==='individual'){
+        anyNull = qids.some(function(qid){ return answers[qid]==null; });
+        matched = !anyNull && qids.every(function(qid){
+          var q = qs.filter(function(x){ return x.id===qid; })[0];
+          return answers[qid]===q.answer;
+        });
+      } else {
+        var combo = qids.map(function(qid){ return answers[qid]; });
+        anyNull = combo.some(function(v){ return v==null; });
+        var sortedCombo = anyNull ? null : combo.slice().sort(function(a,b){ return a-b; });
+        matched = !!group && !anyNull && (group.combos||[]).some(function(c){
+          if(c.length!==combo.length) return false;
+          var sortedC = c.slice().sort(function(a,b){ return a-b; });
+          return sortedC.every(function(v,i){ return v===sortedCombo[i]; });
+        });
+      }
       var earned = matched ? pts : 0;
       total += earned;
       qids.forEach(function(qid){
@@ -372,7 +384,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
   function loadExamForEdit(exam){
     var clone = JSON.parse(JSON.stringify(exam));
     clone.groups = (clone.groups||[]).map(function(g){
-      return { groupId:g.groupId, points:g.points, combosText:(g.combos||[]).map(function(c){ return c.join(','); }) };
+      return { groupId:g.groupId, points:g.points, mode: g.mode==='individual' ? 'individual' : 'combo', combosText:(g.combos||[]).map(function(c){ return c.join(','); }) };
     });
     clone.sections = (clone.sections||[]).map(function(sec){
       return {
@@ -493,8 +505,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
   function renderLogin(){
     return ''
       + '<div class="login-hero"><h1>マークシート自動採点</h1><p class="sub">解いた答えを入力して、その場で自動採点します。</p></div>'
-      + '<label>ログインキー<input type="text" data-field="keyInput" value="'+esc(state.keyInput||'')+'" placeholder="伝えられたキーを入力"></label>'
-      + '<p class="hint">「色＋ようす＋どうぶつ」がつながったひらがなのキーです。伝えられたキーをそのまま入力してください。</p>'
+      + '<label>ログインキー<input type="text" data-field="keyInput" value="'+esc(state.keyInput||'')+'" placeholder="キーを入力"></label>'
       + (state.error ? '<p class="error">'+esc(state.error)+'</p>' : '')
       + '<button class="btn btn-primary btn-block" data-action="doLogin">ログイン</button>'
       + '<button class="btn-link" data-action="showRecover">キーを忘れた・取得</button>';
@@ -586,6 +597,23 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
       + '</div>';
   }
 
+  // 不正解だった問題の「正解」を表示する。複数回答は候補一覧、完全解答はグループの正解
+  // （組み合わせモードなら登録済みの組み合わせ、個別モードならその問題自身の正解）を返す。
+  function correctAnswerLabel(exam, q){
+    if(q.type==='multi'){
+      var c = q.candidates||[];
+      return c.length ? c.join('・') : null;
+    }
+    if(q.type==='complete' && q.groupId){
+      var g = (exam.groups||[]).filter(function(x){ return x.groupId===q.groupId; })[0];
+      if(!g) return null;
+      if(g.mode==='individual') return q.answer!=null ? String(q.answer) : null;
+      if(!g.combos || !g.combos.length) return null;
+      return g.combos.map(function(c){ return c.join('・'); }).join(' または ');
+    }
+    return q.answer!=null ? String(q.answer) : null;
+  }
+
   function renderExamResult(){
     var sub = state.currentSubmission;
     var exam = getExams().filter(function(e){ return e.id===sub.examId; })[0];
@@ -602,7 +630,8 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
       var status = r.correct===true ? '<span class="mark ok">○</span>' : r.correct===false ? '<span class="mark ng">×</span>' : '<span class="mark unknown">―</span>';
       var yourAnsRaw = sub.answers[q.id];
       var yourAns = yourAnsRaw!=null ? yourAnsRaw : '未回答';
-      var correctAnsHtml = (r.correct===false && q.answer!=null) ? '<span class="ans">正解: '+q.answer+'</span>' : '';
+      var correctLabel = r.correct===false ? correctAnswerLabel(exam, q) : null;
+      var correctAnsHtml = correctLabel!=null ? '<span class="ans">正解: '+esc(correctLabel)+'</span>' : '';
       return '<div class="q-result-row"><span class="qn">'+esc(q.no)+'</span>'+status+'<span class="ya">あなたの解答: '+esc(String(yourAns))+'</span>'+correctAnsHtml+'</div>';
     }).join('');
     return ''
@@ -706,7 +735,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
   // ---- render: exam editor ----
   function renderExamEdit(){
     var exam = state.editingExam;
-    var sectionsHtml = (exam.sections||[]).map(function(sec, si){ return renderSectionEditor(sec, si); }).join('') || '<p class="hint">まだ大問がありません。</p>';
+    var sectionsHtml = (exam.sections||[]).map(function(sec, si){ return renderSectionEditor(sec, si, exam.groups); }).join('') || '<p class="hint">まだ大問がありません。</p>';
     var groupsHtml = (exam.groups||[]).map(function(g, gi){ return renderGroupEditor(g, gi); }).join('');
     return ''
       + '<div class="topbar"><button class="btn-link" data-action="cancelEdit">← 戻る</button><h1>模試の編集</h1><button class="btn btn-primary" data-action="saveExam">保存</button></div>'
@@ -719,7 +748,9 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
       + sectionsHtml
       + '<button class="btn btn-secondary" data-action="addSection">＋ 大問を追加</button>'
       + '<h2>完全解答グループ</h2>'
-      + '<p class="hint">「完全解答」タイプの問題は、ここでグループIDごとに正解の組み合わせを登録してください。並び順は問いません（例: 2,6 と登録すれば 6,2 と答えても正解、4,6,9 と登録すればその並び替えもすべて正解になります）。</p>'
+      + '<p class="hint">「完全解答」タイプの問題は、ここでグループIDごとに採点方法を設定してください。<br>'
+      + '「順不同の組み合わせ」モードでは正解の組み合わせを登録します（並び順は問いません。例: 2,6 と登録すれば 6,2 と答えても正解、4,6,9 と登録すればその並び替えもすべて正解になります）。<br>'
+      + '「全問正解でまとめて配点」モードでは、各問題は自分自身の正解を持ち（問題側の「正解」欄に入力）、グループ内の全問に正解した場合だけ、このグループの配点がまとめて加算されます（部分点なし。例: 問21〜24を同じグループIDにして配点4にすれば、4問すべて正解したときだけ4点）。</p>'
       + groupsHtml
       + '<button class="btn btn-secondary" data-action="addGroup">＋ グループを追加</button>';
   }
@@ -734,8 +765,8 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
       + '</div>';
   }
 
-  function renderSectionEditor(sec, si){
-    var rows = (sec.questions||[]).map(function(q, qi){ return renderQuestionRow(si, q, qi); }).join('');
+  function renderSectionEditor(sec, si, groups){
+    var rows = (sec.questions||[]).map(function(q, qi){ return renderQuestionRow(si, q, qi, groups); }).join('');
     return ''
       + '<div class="section-editor">'
       + '<div class="row"><input data-field="editingExam.sections.'+si+'.title" value="'+esc(sec.title)+'" placeholder="大問タイトル 例: 第1問">'
@@ -753,14 +784,19 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
       + '</div>';
   }
 
-  function renderQuestionRow(si, q, qi){
+  function renderQuestionRow(si, q, qi, groups){
     var answerCell;
     var prefix = 'editingExam.sections.'+si+'.questions.'+qi;
     if(q.type==='multi'){
       answerCell = '<input type="text" placeholder="候補 例: 1,4" data-field="'+prefix+'.candidatesText" value="'+esc(q.candidatesText||'')+'">'
         + '<input type="text" style="margin-top:4px" placeholder="グループID(任意・重複防止)" data-field="'+prefix+'.groupId" value="'+esc(q.groupId||'')+'">';
     } else if(q.type==='complete'){
+      var grp = (groups||[]).filter(function(g){ return g.groupId===q.groupId; })[0];
+      var grpMode = grp && grp.mode==='individual' ? 'individual' : 'combo';
       answerCell = '<input type="text" placeholder="グループID" data-field="'+prefix+'.groupId" value="'+esc(q.groupId||'')+'">';
+      if(grpMode==='individual'){
+        answerCell += '<input type="number" style="margin-top:4px" placeholder="この問題自身の正解" data-field="'+prefix+'.answer" value="'+(q.answer==null?'':q.answer)+'">';
+      }
     } else {
       answerCell = '<input type="number" data-field="'+prefix+'.answer" value="'+(q.answer==null?'':q.answer)+'">';
     }
@@ -780,17 +816,28 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
   }
 
   function renderGroupEditor(g, gi){
-    var combos = (g.combosText||[]).map(function(c, ci){
-      return '<div class="row"><input type="text" data-field="editingExam.groups.'+gi+'.combosText.'+ci+'" value="'+esc(c)+'" placeholder="例: 1,4">'
-        + '<button class="btn-link danger" data-action="removeCombo" data-gi="'+gi+'" data-ci="'+ci+'">×</button></div>';
-    }).join('');
+    var mode = g.mode==='individual' ? 'individual' : 'combo';
+    var bodyHtml;
+    if(mode==='individual'){
+      bodyHtml = '<p class="hint">このグループIDを設定した各問題の「正解」欄に、その問題自身の正解番号を入力してください。グループ内の全問に正解した場合だけ、上の配点が加算されます（部分点なし）。</p>';
+    } else {
+      var combos = (g.combosText||[]).map(function(c, ci){
+        return '<div class="row"><input type="text" data-field="editingExam.groups.'+gi+'.combosText.'+ci+'" value="'+esc(c)+'" placeholder="例: 1,4">'
+          + '<button class="btn-link danger" data-action="removeCombo" data-gi="'+gi+'" data-ci="'+ci+'">×</button></div>';
+      }).join('');
+      bodyHtml = combos
+        + '<button class="btn-link" data-action="addCombo" data-gi="'+gi+'">＋ 正解パターンを追加</button>';
+    }
     return ''
       + '<div class="group-editor">'
       + '<div class="row"><input data-field="editingExam.groups.'+gi+'.groupId" value="'+esc(g.groupId)+'" placeholder="グループID">'
       + '<input type="number" style="width:6em" data-field="editingExam.groups.'+gi+'.points" value="'+g.points+'" placeholder="配点">'
       + '<button class="btn-link danger" data-action="removeGroup" data-gi="'+gi+'">削除</button></div>'
-      + combos
-      + '<button class="btn-link" data-action="addCombo" data-gi="'+gi+'">＋ 正解パターンを追加</button>'
+      + '<label>採点方法<select data-field="editingExam.groups.'+gi+'.mode" data-rerender="true">'
+      + '<option value="combo" '+(mode==='combo'?'selected':'')+'>順不同の組み合わせが一致すれば正解</option>'
+      + '<option value="individual" '+(mode==='individual'?'selected':'')+'>各問が個別の正解を持ち、全問正解でまとめて配点</option>'
+      + '</select></label>'
+      + bodyHtml
       + '</div>';
   }
 
@@ -852,22 +899,23 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
             if(base.type==='multi'){
               base.candidates = (q.candidatesText||'').split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s!==''; }).map(Number).map(choiceValue);
               base.groupId = (q.groupId||'').trim();
-            } else if(base.type==='complete'){
-              base.groupId = (q.groupId||'').trim();
             } else {
               base.answer = (q.answer===''||q.answer==null) ? null : choiceValue(q.answer);
+              if(base.type==='complete'){ base.groupId = (q.groupId||'').trim(); }
             }
             return base;
           })
         };
       }),
       groups: (src.groups||[]).map(function(g){
+        var mode = g.mode==='individual' ? 'individual' : 'combo';
         return {
           groupId: (g.groupId||'').trim(),
           points: Number(g.points)||0,
-          combos: (g.combosText||[]).map(function(t){
+          mode: mode,
+          combos: mode==='combo' ? (g.combosText||[]).map(function(t){
             return t.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s!==''; }).map(Number).map(choiceValue);
-          }).filter(function(arr){ return arr.length>0; })
+          }).filter(function(arr){ return arr.length>0; }) : []
         };
       }).filter(function(g){ return g.groupId; })
     };
@@ -1008,7 +1056,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
     },
     addGroup: function(){
       state.editingExam.groups = state.editingExam.groups || [];
-      state.editingExam.groups.push({groupId:'', points:0, combosText:['']});
+      state.editingExam.groups.push({groupId:'', points:0, mode:'combo', combosText:['']});
       render();
     },
     removeGroup: function(el){ state.editingExam.groups.splice(Number(el.dataset.gi),1); render(); },
