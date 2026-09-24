@@ -278,6 +278,25 @@ const auth = getAuth(fbApp);
   var draftsCache = {}; // key: studentKey+'__'+examId -> answers
   var unsubscribers = [];
 
+  // Firestoreは「配列の中の配列」を保存できない。完全解答の組み合わせ(combos)は
+  // 画面内では [[1,4],[4,1]] の二重配列で扱うため、保存時は ["1,4","4,1"] の文字列配列に変換し、読み込み時に戻す。
+  function examToStore(e){
+    var c = JSON.parse(JSON.stringify(e));
+    (c.groups||[]).forEach(function(g){
+      g.combos = (g.combos||[]).map(function(a){ return Array.isArray(a) ? a.join(',') : String(a); });
+    });
+    return c;
+  }
+  function examFromStore(d){
+    (d.groups||[]).forEach(function(g){
+      g.combos = (g.combos||[]).map(function(c){
+        if(Array.isArray(c)) return c;
+        return String(c).split(',').map(function(x){ return x.trim(); }).filter(function(x){ return x!==''; }).map(Number);
+      });
+    });
+    return d;
+  }
+
   function stopAllSubscriptions(){
     unsubscribers.forEach(function(fn){ try{ fn(); }catch(e){} });
     unsubscribers = [];
@@ -287,7 +306,7 @@ const auth = getAuth(fbApp);
   function subscribeAdminData(){
     stopAllSubscriptions();
     unsubscribers.push(onSnapshot(collection(db,'exams'), function(snap){
-      examsCache = snap.docs.map(function(d){ return d.data(); });
+      examsCache = snap.docs.map(function(d){ return examFromStore(d.data()); });
       render();
     }, function(err){ console.error(err); showToast('模試データの取得に失敗しました'); }));
     unsubscribers.push(onSnapshot(collection(db,'submissions'), function(snap){
@@ -300,7 +319,7 @@ const auth = getAuth(fbApp);
   function subscribeStudentData(key){
     stopAllSubscriptions();
     unsubscribers.push(onSnapshot(query(collection(db,'exams'), where('status','==','published')), function(snap){
-      examsCache = snap.docs.map(function(d){ return d.data(); });
+      examsCache = snap.docs.map(function(d){ return examFromStore(d.data()); });
       render();
     }, function(err){ console.error(err); showToast('模試データの取得に失敗しました'); }));
     unsubscribers.push(onSnapshot(query(collection(db,'submissions'), where('studentKey','==',key)), function(snap){
@@ -321,7 +340,10 @@ const auth = getAuth(fbApp);
     var nextIds = list.map(function(e){ return e.id; });
     examsCache = list; // 楽観的にローカルへ反映（少し遅れてonSnapshotが確定値で上書きする）
     list.forEach(function(e){
-      setDoc(doc(db,'exams',e.id), e).catch(function(err){ console.error(err); showToast('模試の保存に失敗しました'); });
+      var p;
+      try{ p = setDoc(doc(db,'exams',e.id), examToStore(e)); }
+      catch(err){ p = Promise.reject(err); }
+      p.catch(function(err){ console.error(err); showToast('模試の保存に失敗しました'); });
     });
     prevIds.filter(function(id){ return nextIds.indexOf(id)===-1; }).forEach(function(id){
       deleteDoc(doc(db,'exams',id)).catch(function(err){ console.error(err); });
