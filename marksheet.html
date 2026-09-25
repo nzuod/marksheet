@@ -83,6 +83,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
 .btn-block{ display:block; width:100%; margin-top:12px; }
 .btn-link{ background:none; border:none; color:var(--accent); font-family:var(--font-body); font-size:0.9rem; cursor:pointer; padding:6px 0; }
 .btn-link.danger{ color:var(--red); }
+.explanation-link{ display:inline-flex; align-items:center; gap:6px; margin:18px 0 4px; padding:10px 14px; background:var(--surface-2); border:1px solid var(--line); border-radius:var(--radius-s); color:var(--accent); text-decoration:none; font-size:0.9rem; font-weight:700; }
 
 .topbar{ display:flex; align-items:center; justify-content:space-between; gap:10px; position:sticky; top:env(safe-area-inset-top,0px); background:var(--paper); padding:10px 0 14px; margin-bottom:6px; border-bottom:1px solid var(--line); z-index:5; }
 .user-badge{ font-size:0.8rem; color:var(--ink-soft); }
@@ -514,7 +515,7 @@ const auth = getAuth(fbApp);
   }
 
   function makeBlankExam(){
-    return { id:uid('exam'), name:'', subject:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:4, sections:[], groups:[] };
+    return { id:uid('exam'), name:'', subject:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:4, sections:[], groups:[] };
   }
 
   function loadExamForEdit(exam){
@@ -537,6 +538,7 @@ const auth = getAuth(fbApp);
     });
     if(clone.defaultChoices==null) clone.defaultChoices = 4;
     if(clone.groups==null) clone.groups = [];
+    if(clone.explanationUrl==null) clone.explanationUrl = '';
     clone.wholeBulkText = '';
     return clone;
   }
@@ -552,10 +554,12 @@ const auth = getAuth(fbApp);
       var no = parts[1].trim();
       var answer = parts[2].trim();
       var pointsRaw = parts[3].trim();
+      var choicesRaw = parts[4]!=null ? parts[4].trim() : '';
       if(!section) return null;
       if(!/^\d+$/.test(no) || !/^\d+$/.test(answer)) return null;
       var points = (pointsRaw==='' || isNaN(Number(pointsRaw))) ? 1 : Number(pointsRaw);
-      return { section:section, no:no, answer:choiceValue(answer), points:points };
+      var choices = (choicesRaw!=='' && /^\d+$/.test(choicesRaw)) ? Number(choicesRaw) : null;
+      return { section:section, no:no, answer:choiceValue(answer), points:points, choices:choices };
     }).filter(function(r){ return r!=null; });
   }
 
@@ -761,6 +765,7 @@ const auth = getAuth(fbApp);
     return ''
       + '<div class="topbar"><button class="btn-link" data-action="backFromResult">← 戻る</button><h1>結果</h1><div></div></div>'
       + '<div class="score-hero"><div class="score-num">'+sub.total+'<span class="score-max">/ '+sub.max+'点</span></div><div class="score-rate">正答率 '+rate+'%</div></div>'
+      + (exam && exam.explanationUrl ? '<a class="explanation-link" href="'+esc(exam.explanationUrl)+'" target="_blank" rel="noopener noreferrer">解説URL</a>' : '')
       + '<h2>大問別結果</h2><div class="result-table">'+sectionRows+'</div>'
       + '<h2>問題ごとの結果</h2><div class="q-result-list">'+qRows+'</div>'
       + '<button class="btn btn-secondary btn-block" style="margin-top:20px" data-action="backFromResult">← 戻る</button>';
@@ -866,6 +871,7 @@ const auth = getAuth(fbApp);
       + '<label>模試名<input data-field="editingExam.name" value="'+esc(exam.name)+'" placeholder="例: 第1回 全統マーク模試・国語"></label>'
       + '<label>教科<input data-field="editingExam.subject" value="'+esc(exam.subject)+'" placeholder="例: 国語"></label>'
       + '<p class="hint">学年度: '+esc(gakunendoLabel(exam.year))+'（作成日から自動判定・変更不可。管理画面の「データ削除」タブで学年度ごとまとめて削除できます）</p>'
+      + '<label>解説URL（任意。入力すると結果画面に「解説URL」というリンクが表示されます）<input type="text" data-field="editingExam.explanationUrl" value="'+esc(exam.explanationUrl||'')+'" placeholder="例: https://example.com/kaisetsu"></label>'
       + '<label>デフォルト選択肢数<input type="number" min="2" max="10" data-field="editingExam.defaultChoices" value="'+exam.defaultChoices+'"></label>'
       + '<h2>大問</h2>'
       + renderWholeBulkBox(exam)
@@ -882,8 +888,8 @@ const auth = getAuth(fbApp);
   function renderWholeBulkBox(exam){
     return ''
       + '<div class="bulk-paste-whole">'
-      + '<label>大問名もまとめて一括作成（「大問名・番号・解答・配点」の4列。表計算ソフトからのコピペでOK。反映すると今登録されているすべての大問が置き換わります）'
-      + '<textarea rows="6" data-field="editingExam.wholeBulkText" placeholder="第1問\t1\t1\t4\n第1問\t2\t2\t4\n第2問\t9\t2\t3">'+esc(exam.wholeBulkText||'')+'</textarea>'
+      + '<label>大問名もまとめて一括作成（「大問名・番号・解答・配点・選択肢数」の5列。表計算ソフトからのコピペでOK。選択肢数の列は空欄でも構いません（空欄はデフォルト選択肢数を使用）。反映すると今登録されているすべての大問が置き換わります）'
+      + '<textarea rows="6" data-field="editingExam.wholeBulkText" placeholder="第1問\t1\t1\t4\t4\n第1問\t2\t2\t4\t4\n第2問\t9\t2\t3\t5">'+esc(exam.wholeBulkText||'')+'</textarea>'
       + '</label>'
       + '<button class="btn btn-secondary" data-action="applyWholeBulk">大問ごとまとめて作成</button>'
       + '</div>';
@@ -1008,6 +1014,7 @@ const auth = getAuth(fbApp);
       id: src.id,
       name: src.name.trim(),
       subject: (src.subject||'').trim(),
+      explanationUrl: (src.explanationUrl||'').trim(),
       year: src.year,
       status: src.status||'draft',
       defaultChoices: Number(src.defaultChoices)||4,
@@ -1209,7 +1216,7 @@ const auth = getAuth(fbApp);
           sectionMap[r.section] = { id:uid('sec'), title:r.section, questions:[], bulkText:'' };
           sectionOrder.push(r.section);
         }
-        sectionMap[r.section].questions.push({ id:uid('q'), no:r.no, choices:null, type:'normal', points:r.points, answer:r.answer, candidatesText:'', groupId:'' });
+        sectionMap[r.section].questions.push({ id:uid('q'), no:r.no, choices:r.choices, type:'normal', points:r.points, answer:r.answer, candidatesText:'', groupId:'' });
       });
       var newSections = sectionOrder.map(function(name){ return sectionMap[name]; });
       openConfirm({
