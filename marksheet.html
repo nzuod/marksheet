@@ -83,7 +83,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
 .btn-block{ display:block; width:100%; margin-top:12px; }
 .btn-link{ background:none; border:none; color:var(--accent); font-family:var(--font-body); font-size:0.9rem; cursor:pointer; padding:6px 0; }
 .btn-link.danger{ color:var(--red); }
-.explanation-link{ display:inline-flex; align-items:center; gap:6px; margin:18px 0 4px; padding:10px 14px; background:var(--surface-2); border:1px solid var(--line); border-radius:var(--radius-s); color:var(--accent); text-decoration:none; font-size:0.9rem; font-weight:700; }
+.explanation-link, .problem-link{ display:inline-flex; align-items:center; gap:6px; margin:18px 0 4px; padding:10px 14px; background:var(--surface-2); border:1px solid var(--line); border-radius:var(--radius-s); color:var(--accent); text-decoration:none; font-size:0.9rem; font-weight:700; }
 
 .topbar{ display:flex; align-items:center; justify-content:space-between; gap:10px; position:sticky; top:env(safe-area-inset-top,0px); background:var(--paper); padding:10px 0 14px; margin-bottom:6px; border-bottom:1px solid var(--line); z-index:5; }
 .user-badge{ font-size:0.8rem; color:var(--ink-soft); }
@@ -515,7 +515,7 @@ const auth = getAuth(fbApp);
   }
 
   function makeBlankExam(){
-    return { id:uid('exam'), name:'', subject:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:4, sections:[], groups:[] };
+    return { id:uid('exam'), name:'', subject:'', problemUrl:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:4, sections:[], groups:[] };
   }
 
   function loadExamForEdit(exam){
@@ -538,6 +538,7 @@ const auth = getAuth(fbApp);
     });
     if(clone.defaultChoices==null) clone.defaultChoices = 4;
     if(clone.groups==null) clone.groups = [];
+    if(clone.problemUrl==null) clone.problemUrl = '';
     if(clone.explanationUrl==null) clone.explanationUrl = '';
     clone.wholeBulkText = '';
     return clone;
@@ -718,6 +719,7 @@ const auth = getAuth(fbApp);
     return ''
       + '<div class="topbar"><button class="btn-link" data-action="leaveAnswerScreen">← 一覧に戻る</button><h1>'+esc(exam.name)+'</h1><div></div></div>'
       + '<div class="exam-sub">'+esc(exam.subject)+' ・ '+esc(exam.year||'')+'</div>'
+      + (exam.problemUrl ? '<a class="problem-link" href="'+esc(exam.problemUrl)+'" target="_blank" rel="noopener noreferrer">問題</a>' : '')
       + sectionsHtml
       + '<div class="answer-footer">'
       + '<button class="btn btn-secondary btn-block" data-action="saveDraft">途中保存</button>'
@@ -765,7 +767,7 @@ const auth = getAuth(fbApp);
     return ''
       + '<div class="topbar"><button class="btn-link" data-action="backFromResult">← 戻る</button><h1>結果</h1><div></div></div>'
       + '<div class="score-hero"><div class="score-num">'+sub.total+'<span class="score-max">/ '+sub.max+'点</span></div><div class="score-rate">正答率 '+rate+'%</div></div>'
-      + (exam && exam.explanationUrl ? '<a class="explanation-link" href="'+esc(exam.explanationUrl)+'" target="_blank" rel="noopener noreferrer">解説URL</a>' : '')
+      + (exam && exam.explanationUrl ? '<a class="explanation-link" href="'+esc(exam.explanationUrl)+'" target="_blank" rel="noopener noreferrer">解説</a>' : '')
       + '<h2>大問別結果</h2><div class="result-table">'+sectionRows+'</div>'
       + '<h2>問題ごとの結果</h2><div class="q-result-list">'+qRows+'</div>'
       + '<button class="btn btn-secondary btn-block" style="margin-top:20px" data-action="backFromResult">← 戻る</button>';
@@ -871,7 +873,8 @@ const auth = getAuth(fbApp);
       + '<label>模試名<input data-field="editingExam.name" value="'+esc(exam.name)+'" placeholder="例: 第1回 全統マーク模試・国語"></label>'
       + '<label>教科<input data-field="editingExam.subject" value="'+esc(exam.subject)+'" placeholder="例: 国語"></label>'
       + '<p class="hint">学年度: '+esc(gakunendoLabel(exam.year))+'（作成日から自動判定・変更不可。管理画面の「データ削除」タブで学年度ごとまとめて削除できます）</p>'
-      + '<label>解説URL（任意。入力すると結果画面に「解説URL」というリンクが表示されます）<input type="text" data-field="editingExam.explanationUrl" value="'+esc(exam.explanationUrl||'')+'" placeholder="例: https://example.com/kaisetsu"></label>'
+      + '<label>問題URL（任意。入力すると解答画面に「問題」というリンクが表示されます）<input type="text" data-field="editingExam.problemUrl" value="'+esc(exam.problemUrl||'')+'" placeholder="例: https://example.com/mondai"></label>'
+      + '<label>解説URL（任意。入力すると結果画面に「解説」というリンクが表示されます）<input type="text" data-field="editingExam.explanationUrl" value="'+esc(exam.explanationUrl||'')+'" placeholder="例: https://example.com/kaisetsu"></label>'
       + '<label>デフォルト選択肢数<input type="number" min="2" max="10" data-field="editingExam.defaultChoices" value="'+exam.defaultChoices+'"></label>'
       + '<h2>大問</h2>'
       + renderWholeBulkBox(exam)
@@ -1014,6 +1017,7 @@ const auth = getAuth(fbApp);
       id: src.id,
       name: src.name.trim(),
       subject: (src.subject||'').trim(),
+      problemUrl: (src.problemUrl||'').trim(),
       explanationUrl: (src.explanationUrl||'').trim(),
       year: src.year,
       status: src.status||'draft',
