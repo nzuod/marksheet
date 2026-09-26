@@ -139,6 +139,19 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
 .past-name{ font-weight:700; }
 .past-meta{ font-size:0.82rem; color:var(--ink-soft); margin-top:2px; }
 
+.tag-chip{ display:inline-block; font-size:0.7rem; padding:2px 8px; border-radius:100px; background:var(--blue-soft); color:var(--blue); margin:2px 4px 2px 0; }
+
+.exam-timer-bar{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin:12px 0; padding:10px 14px; background:var(--surface); border-radius:var(--radius-m); }
+.exam-timer-bar .timer-clock{ margin:0; font-size:1.35rem; }
+.lap-capture{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 2px; font-size:0.82rem; color:var(--ink-soft); }
+
+.timer-clock{ font-family:var(--font-display); font-size:2.3rem; font-weight:700; text-align:center; letter-spacing:.03em; margin:8px 0 14px; font-variant-numeric:tabular-nums; }
+
+.chart-wrap{ height:200px; margin-top:12px; position:relative; }
+.chart-wrap canvas{ width:100%; height:100%; display:block; }
+.chart-legend{ display:flex; gap:12px; flex-wrap:wrap; font-size:0.76rem; color:var(--ink-soft); margin-top:8px; }
+.chart-legend .dot{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; vertical-align:middle; }
+
 .login-hero{ text-align:center; padding:50px 0 10px; }
 
 .recover-result{ margin-top:18px; padding:16px; background:var(--surface); border-radius:var(--radius-m); text-align:center; }
@@ -245,6 +258,17 @@ const auth = getAuth(fbApp);
     var d = new Date(ts);
     function p(n){ return String(n).padStart(2,'0'); }
     return d.getFullYear()+'/'+p(d.getMonth()+1)+'/'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+  }
+  // ミリ秒を HH:MM:SS に整形する（解答タイマー・ラップ表示用）
+  function formatDuration(ms){
+    var totalSec = Math.max(0, Math.floor((ms||0)/1000));
+    var h = Math.floor(totalSec/3600), m = Math.floor((totalSec%3600)/60), s = totalSec%60;
+    function p(n){ return String(n).padStart(2,'0'); }
+    return p(h)+':'+p(m)+':'+p(s);
+  }
+  function shortDate(ts){
+    var d = new Date(ts);
+    return (d.getMonth()+1)+'/'+d.getDate();
   }
   // 選択肢は10個目を「10」ではなく「0」として、表示だけでなく内部の値としても保持する
   function choiceValue(n){ return Number(n)%10; }
@@ -515,7 +539,39 @@ const auth = getAuth(fbApp);
   }
 
   function makeBlankExam(){
-    return { id:uid('exam'), name:'', subject:'', problemUrl:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:4, sections:[], groups:[] };
+    return { id:uid('exam'), name:'', subject:'', problemUrl:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:4, sections:[], groups:[], tags:[] };
+  }
+
+  // ---- 解答タイマー（模試を開くと自動スタートし、大問ごとにラップを記録する） ----
+  function makeBlankExamTimer(){
+    return { running:false, startedAt:null, accumulatedMs:0, laps:[] };
+  }
+  function examTimerElapsedMs(){
+    var t = state.examTimer;
+    if(!t) return 0;
+    return (t.accumulatedMs||0) + (t.running && t.startedAt ? (Date.now()-t.startedAt) : 0);
+  }
+  var examTimerInterval = null;
+  function ensureExamTimerTick(){
+    if(examTimerInterval) return;
+    examTimerInterval = setInterval(function(){
+      var el = document.getElementById('examTimerClock');
+      if(!el){ clearInterval(examTimerInterval); examTimerInterval=null; return; }
+      el.textContent = formatDuration(examTimerElapsedMs());
+    }, 1000);
+  }
+  function stopExamTimerTick(){
+    if(examTimerInterval){ clearInterval(examTimerInterval); examTimerInterval=null; }
+  }
+
+  // ---- 成績推移（過去の結果をタグで絞り込み、提出日時順に並べる） ----
+  function trendFilteredSortedSubs(){
+    var q = (state.trendFilterTag||'').trim().toLowerCase();
+    var list = getSubs().filter(function(s){ return state.user && s.studentKey===state.user.key; });
+    if(q){
+      list = list.filter(function(s){ return (s.examTags||[]).some(function(t){ return t.toLowerCase().indexOf(q)!==-1; }); });
+    }
+    return list.slice().sort(function(a,b){ return (a.submittedAt||0)-(b.submittedAt||0); });
   }
 
   function loadExamForEdit(exam){
@@ -540,6 +596,7 @@ const auth = getAuth(fbApp);
     if(clone.groups==null) clone.groups = [];
     if(clone.problemUrl==null) clone.problemUrl = '';
     if(clone.explanationUrl==null) clone.explanationUrl = '';
+    clone.tagsText = (clone.tags||[]).join('、');
     clone.wholeBulkText = '';
     return clone;
   }
@@ -601,6 +658,8 @@ const auth = getAuth(fbApp);
     studentTab:'list', adminTab:'exams',
     currentExamId:null, currentAnswers:null, currentSubmission:null, resultOrigin:'list',
     editingExam:null, adminStatsExamId:null, adminDeleteYear:null,
+    examTimer:null, examTimerExamId:null,
+    trendFilterTag:'', trendMetric:'rate',
     modal:null, toast:null
   };
 
@@ -664,8 +723,9 @@ const auth = getAuth(fbApp);
       + '<div class="tabs">'
       + '<button class="tab '+(tab==='list'?'active':'')+'" data-action="setStudentTab" data-tab="list">模試一覧</button>'
       + '<button class="tab '+(tab==='past'?'active':'')+'" data-action="setStudentTab" data-tab="past">過去の結果</button>'
+      + '<button class="tab '+(tab==='trend'?'active':'')+'" data-action="setStudentTab" data-tab="trend">成績推移</button>'
       + '</div>'
-      + (tab==='list' ? renderExamList() : renderPastResults());
+      + (tab==='list' ? renderExamList() : tab==='past' ? renderPastResults() : renderTrendTab());
   }
 
   function renderExamList(){
@@ -674,9 +734,12 @@ const auth = getAuth(fbApp);
     var drafts = getDrafts();
     return '<div class="exam-list">'+exams.map(function(e){
       var hasDraft = !!drafts[state.user.key+'__'+e.id];
+      var tagsHtml = (e.tags||[]).map(function(t){ return '<span class="tag-chip">'+esc(t)+'</span>'; }).join('');
       return '<div class="exam-item" data-action="openExam" data-eid="'+e.id+'">'
         + '<div class="exam-item-main"><div class="exam-item-name">'+esc(e.name)+'</div>'
-        + '<div class="exam-item-meta">'+esc(e.subject)+' ・ '+esc(e.year||'')+'</div></div>'
+        + '<div class="exam-item-meta">'+esc(e.subject)+' ・ '+esc(e.year||'')+'</div>'
+        + (tagsHtml ? '<div>'+tagsHtml+'</div>' : '')
+        + '</div>'
         + (hasDraft ? '<span class="pill pill-warn">途中</span>' : '')
         + '</div>';
     }).join('')+'</div>';
@@ -686,19 +749,144 @@ const auth = getAuth(fbApp);
     var subs = getSubs().filter(function(s){ return s.studentKey===state.user.key; }).sort(function(a,b){ return b.submittedAt-a.submittedAt; });
     if(subs.length===0) return '<p class="empty">まだ提出した結果はありません。</p>';
     return '<div class="past-list">'+subs.map(function(s){
+      var tagsHtml = (s.examTags||[]).map(function(t){ return '<span class="tag-chip">'+esc(t)+'</span>'; }).join('');
       return '<div class="past-item">'
         + '<div class="past-main" data-action="viewPastResult" data-sid="'+s.id+'">'
         + '<div class="past-name">'+esc(s.examName)+'</div>'
-        + '<div class="past-meta">'+formatDate(s.submittedAt)+' ・ '+s.total+'/'+s.max+'点</div></div>'
+        + '<div class="past-meta">'+formatDate(s.submittedAt)+' ・ '+s.total+'/'+s.max+'点'+(s.elapsedMs!=null?' ・ '+formatDuration(s.elapsedMs):'')+'</div>'
+        + (tagsHtml ? '<div>'+tagsHtml+'</div>' : '')
+        + '</div>'
         + '<button class="btn-link danger" data-action="deletePastResult" data-sid="'+s.id+'">削除</button>'
         + '</div>';
     }).join('')+'</div>';
+  }
+
+  // ---- render: 成績推移（過去の結果をタグで絞り込み、得点率・所要時間・大問別得点率を表示） ----
+  function renderTrendTab(){
+    return ''
+      + '<p class="hint">タグで検索し、得点率・所要時間・大問別得点率の推移を表示します。</p>'
+      + '<label>タグで検索<input type="text" data-field="trendFilterTag" value="'+esc(state.trendFilterTag||'')+'" placeholder="例: 第2回"></label>'
+      + '<label>表示するデータ<select data-field="trendMetric" data-rerender="true">'
+      + '<option value="rate" '+(state.trendMetric==='rate'?'selected':'')+'>得点率</option>'
+      + '<option value="time" '+(state.trendMetric==='time'?'selected':'')+'>所要時間</option>'
+      + '<option value="section" '+(state.trendMetric==='section'?'selected':'')+'>大問別得点率</option>'
+      + '</select></label>'
+      + '<div class="chart-wrap"><canvas id="trendChart"></canvas></div>'
+      + '<div class="chart-legend" id="trendLegend"></div>';
+  }
+
+  // キャンバスに手描きで折れ線グラフを描く（得点率・所要時間・大問別得点率）
+  function drawTrendChart(){
+    var canvas = document.getElementById('trendChart');
+    if(!canvas) return;
+    var legend = document.getElementById('trendLegend');
+    var list = trendFilteredSortedSubs();
+    var ctx = canvas.getContext('2d');
+    var rect = canvas.getBoundingClientRect();
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(rect.width*dpr));
+    canvas.height = Math.max(1, Math.round(rect.height*dpr));
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    var W = rect.width, H = rect.height;
+    ctx.clearRect(0,0,W,H);
+    if(legend) legend.innerHTML = '';
+    var cs = getComputedStyle(document.documentElement);
+    var lineColor = (cs.getPropertyValue('--accent')||'#35406B').trim();
+    var gridColor = (cs.getPropertyValue('--line')||'#ddd').trim();
+    var textColor = (cs.getPropertyValue('--ink-soft')||'#666').trim();
+    if(list.length===0){
+      ctx.fillStyle = textColor; ctx.font = '13px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('データがありません', W/2, H/2);
+      return;
+    }
+    var pad = {l:34, r:12, t:14, b:22};
+    var plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+    var palette = ['#3B6EA5','#3F8F6B','#B94D3D','#9C6B1F','#35406B','#5B6178'];
+
+    function xAt(i){ return pad.l + (list.length<=1 ? plotW/2 : plotW*i/(list.length-1)); }
+    function drawAxes(maxY, yFmt){
+      ctx.strokeStyle = gridColor; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for(var g=0; g<=4; g++){ var y = pad.t + plotH*g/4; ctx.moveTo(pad.l,y); ctx.lineTo(W-pad.r,y); }
+      ctx.stroke();
+      ctx.fillStyle = textColor; ctx.font = '10px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      for(var g2=0; g2<=4; g2++){
+        var val = maxY*(1-g2/4), y2 = pad.t + plotH*g2/4;
+        ctx.fillText(yFmt(val), pad.l-6, y2);
+      }
+    }
+    var vmax = 100;
+    function drawLine(values, color){
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+      var started = false;
+      values.forEach(function(v,i){
+        if(v==null){ started=false; return; }
+        var x=xAt(i), y=pad.t+plotH-(v/vmax)*plotH;
+        if(!started){ ctx.moveTo(x,y); started=true; } else { ctx.lineTo(x,y); }
+      });
+      ctx.stroke();
+      ctx.fillStyle = color;
+      values.forEach(function(v,i){
+        if(v==null) return;
+        var x=xAt(i), y=pad.t+plotH-(v/vmax)*plotH;
+        ctx.beginPath(); ctx.arc(x,y,2.5,0,Math.PI*2); ctx.fill();
+      });
+    }
+
+    if(state.trendMetric==='time'){
+      var mins = list.map(function(s){ return s.elapsedMs!=null ? s.elapsedMs/60000 : null; });
+      var maxMin = Math.max.apply(null, mins.filter(function(v){return v!=null;}).concat([0]));
+      vmax = Math.max(10, Math.ceil(maxMin/10)*10);
+      drawAxes(vmax, function(v){ return Math.round(v)+'分'; });
+      drawLine(mins, lineColor);
+    } else if(state.trendMetric==='section'){
+      var namesOrder = [];
+      list.forEach(function(s){
+        Object.keys(s.sectionAgg||{}).forEach(function(sid){
+          var nm = s.sectionAgg[sid].title || '大問';
+          if(namesOrder.indexOf(nm)===-1) namesOrder.push(nm);
+        });
+      });
+      vmax = 100;
+      drawAxes(vmax, function(v){ return Math.round(v)+'%'; });
+      namesOrder.slice(0,6).forEach(function(nm, ni){
+        var vals = list.map(function(s){
+          var agg = s.sectionAgg||{};
+          var hit = Object.keys(agg).map(function(sid){ return agg[sid]; }).filter(function(a){ return (a.title||'大問')===nm; })[0];
+          if(!hit || !hit.max) return null;
+          return hit.earned/hit.max*100;
+        });
+        var color = palette[ni%palette.length];
+        drawLine(vals, color);
+        if(legend){
+          var chip = document.createElement('span');
+          chip.innerHTML = '<span class="dot" style="background:'+color+'"></span>'+esc(nm);
+          legend.appendChild(chip);
+        }
+      });
+    } else {
+      var rates = list.map(function(s){ return s.max>0 ? s.total/s.max*100 : 0; });
+      vmax = 100;
+      drawAxes(vmax, function(v){ return Math.round(v)+'%'; });
+      drawLine(rates, lineColor);
+    }
+
+    ctx.fillStyle = textColor; ctx.font = '10px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(shortDate(list[0].submittedAt), pad.l, H-pad.b+6);
+    if(list.length>1){
+      ctx.textAlign = 'right';
+      ctx.fillText(shortDate(list[list.length-1].submittedAt), W-pad.r, H-pad.b+6);
+    }
   }
 
   function renderAnswerScreen(){
     var exam = getExams().filter(function(e){ return e.id===state.currentExamId; })[0];
     if(!exam) return '<p class="empty">模試が見つかりません。</p>';
     var answers = state.currentAnswers;
+    var timer = state.examTimer || makeBlankExamTimer();
+    var lapsById = {};
+    (timer.laps||[]).forEach(function(l){ lapsById[l.sectionId] = l; });
     var globalNo = 0;
     var sectionsHtml = (exam.sections||[]).map(function(sec, si){
       var qsHtml = (sec.questions||[]).map(function(q){
@@ -712,12 +900,19 @@ const auth = getAuth(fbApp);
         }
         return '<div class="q-row"><div class="q-no">'+globalNo+'</div><div class="bubbles">'+bubbles+'</div></div>';
       }).join('');
-      // 大問名は結果画面でのみ表示し、解答画面には出さない。区切りだけ挟む。
+      // 大問名は結果画面でのみ表示し、解答画面には出さない。区切りとラップ記録ボタンだけ挟む。
       var divider = si>0 ? '<div class="section-divider"></div>' : '';
-      return divider+qsHtml;
+      var lap = lapsById[sec.id];
+      var lapCtl = '<div class="lap-capture">'
+        + '<span>'+(lap ? 'ここまでの区切り: 記録済み '+formatDuration(lap.lapMs) : 'ここまでの区切り')+'</span>'
+        + '<button class="btn-link" data-action="recordExamLap" data-secid="'+sec.id+'">'+(lap?'更新':'ラップを記録')+'</button>'
+        + '</div>';
+      return divider+qsHtml+lapCtl;
     }).join('');
     return ''
       + '<div class="topbar"><button class="btn-link" data-action="leaveAnswerScreen">← 一覧に戻る</button><h1>'+esc(exam.name)+'</h1><div></div></div>'
+      + '<div class="exam-timer-bar"><span id="examTimerClock" class="timer-clock">'+formatDuration(examTimerElapsedMs())+'</span>'
+      + '<button class="btn btn-secondary" data-action="toggleExamTimer">'+(timer.running?'一時停止':'再開')+'</button></div>'
       + '<div class="exam-sub">'+esc(exam.subject)+' ・ '+esc(exam.year||'')+'</div>'
       + (exam.problemUrl ? '<a class="problem-link" href="'+esc(exam.problemUrl)+'" target="_blank" rel="noopener noreferrer">問題</a>' : '')
       + sectionsHtml
@@ -748,10 +943,13 @@ const auth = getAuth(fbApp);
     var sub = state.currentSubmission;
     var exam = getExams().filter(function(e){ return e.id===sub.examId; })[0];
     var rate = sub.max>0 ? Math.round(sub.total/sub.max*1000)/10 : 0;
+    var lapsById = {};
+    (sub.laps||[]).forEach(function(l){ lapsById[l.sectionId] = l; });
     var sectionRows = Object.keys(sub.sectionAgg).map(function(sid){
       var s = sub.sectionAgg[sid];
       var pct = s.max>0 ? Math.round(s.earned/s.max*1000)/10 : 0;
-      return '<div class="result-row"><span>'+esc(s.title)+'</span><span>'+s.earned+' / '+s.max+'点</span><span>'+pct+'%</span></div>';
+      var lap = lapsById[sid];
+      return '<div class="result-row"><span>'+esc(s.title)+'</span><span>'+s.earned+' / '+s.max+'点（'+pct+'%）</span>'+(lap?'<span>'+formatDuration(lap.lapMs)+'</span>':'')+'</div>';
     }).join('');
     var qs = exam ? allQuestionsOf(exam) : [];
     var qRows = qs.map(function(q){
@@ -766,7 +964,9 @@ const auth = getAuth(fbApp);
     }).join('');
     return ''
       + '<div class="topbar"><button class="btn-link" data-action="backFromResult">← 戻る</button><h1>結果</h1><div></div></div>'
-      + '<div class="score-hero"><div class="score-num">'+sub.total+'<span class="score-max">/ '+sub.max+'点</span></div><div class="score-rate">正答率 '+rate+'%</div></div>'
+      + '<div class="score-hero"><div class="score-num">'+sub.total+'<span class="score-max">/ '+sub.max+'点</span></div><div class="score-rate">正答率 '+rate+'%</div>'
+      + (sub.elapsedMs!=null ? '<div class="score-rate">所要時間 '+formatDuration(sub.elapsedMs)+'</div>' : '')
+      + '</div>'
       + (exam && exam.explanationUrl ? '<a class="explanation-link" href="'+esc(exam.explanationUrl)+'" target="_blank" rel="noopener noreferrer">解説</a>' : '')
       + '<h2>大問別結果</h2><div class="result-table">'+sectionRows+'</div>'
       + '<h2>問題ごとの結果</h2><div class="q-result-list">'+qRows+'</div>'
@@ -793,9 +993,12 @@ const auth = getAuth(fbApp);
     var listHtml = exams.length===0
       ? '<p class="empty">まだ模試が登録されていません。</p>'
       : exams.map(function(e){
+        var tagsHtml = (e.tags||[]).map(function(t){ return '<span class="tag-chip">'+esc(t)+'</span>'; }).join('');
         return '<div class="exam-item admin">'
           + '<div class="exam-item-main"><div class="exam-item-name">'+esc(e.name)+' <span class="pill pill-'+e.status+'">'+statusLabel[e.status]+'</span></div>'
-          + '<div class="exam-item-meta">'+esc(e.subject)+' ・ '+esc(e.year||'')+'</div></div>'
+          + '<div class="exam-item-meta">'+esc(e.subject)+' ・ '+esc(e.year||'')+'</div>'
+          + (tagsHtml ? '<div>'+tagsHtml+'</div>' : '')
+          + '</div>'
           + '<div class="exam-item-actions">'
           + '<button class="btn-link" data-action="editExam" data-eid="'+e.id+'">編集</button>'
           + '<button class="btn-link" data-action="cycleStatus" data-eid="'+e.id+'">状態変更</button>'
@@ -872,6 +1075,8 @@ const auth = getAuth(fbApp);
       + '<div class="topbar"><button class="btn-link" data-action="cancelEdit">← 戻る</button><h1>模試の編集</h1><button class="btn btn-primary" data-action="saveExam">保存</button></div>'
       + '<label>模試名<input data-field="editingExam.name" value="'+esc(exam.name)+'" placeholder="例: 第1回 全統マーク模試・国語"></label>'
       + '<label>教科<input data-field="editingExam.subject" value="'+esc(exam.subject)+'" placeholder="例: 国語"></label>'
+      + '<label>タグ（成績推移で絞り込みに使います）<input type="text" data-field="editingExam.tagsText" value="'+esc(exam.tagsText||'')+'" placeholder="例: 第2回, 国語, リスニング"></label>'
+      + '<p class="hint">タグはカンマまたは読点で区切ります。生徒が提出した結果にもこのタグが引き継がれます。</p>'
       + '<p class="hint">学年度: '+esc(gakunendoLabel(exam.year))+'（作成日から自動判定・変更不可。管理画面の「データ削除」タブで学年度ごとまとめて削除できます）</p>'
       + '<label>問題URL（任意。入力すると解答画面に「問題」というリンクが表示されます）<input type="text" data-field="editingExam.problemUrl" value="'+esc(exam.problemUrl||'')+'" placeholder="例: https://example.com/mondai"></label>'
       + '<label>解説URL（任意。入力すると結果画面に「解説」というリンクが表示されます）<input type="text" data-field="editingExam.explanationUrl" value="'+esc(exam.explanationUrl||'')+'" placeholder="例: https://example.com/kaisetsu"></label>'
@@ -993,20 +1198,31 @@ const auth = getAuth(fbApp);
     html += renderModal();
     if(state.toast) html += '<div class="toast">'+esc(state.toast)+'</div>';
     app.innerHTML = html;
+
+    var onAnswerScreen = !!(state.user && state.user.type==='student' && state.screen==='examAnswer');
+    if(onAnswerScreen && state.examTimer && state.examTimer.running) ensureExamTimerTick(); else stopExamTimerTick();
+
+    var onTrendTab = !!(state.user && state.user.type==='student' && state.screen!=='examAnswer' && state.screen!=='examResult' && state.studentTab==='trend');
+    if(onTrendTab) drawTrendChart();
   }
 
   // ---- actions ----
   function doSubmitAnswer(){
     var exam = getExams().filter(function(e){ return e.id===state.currentExamId; })[0];
     var result = gradeExam(exam, state.currentAnswers);
+    var elapsedMs = examTimerElapsedMs();
+    var laps = (state.examTimer && state.examTimer.laps) ? state.examTimer.laps.slice() : [];
     var sub = {
-      id: uid('sub'), examId: exam.id, examName: exam.name, studentKey: state.user.key,
+      id: uid('sub'), examId: exam.id, examName: exam.name, examTags: (exam.tags||[]).slice(), studentKey: state.user.key,
       submittedAt: Date.now(), total: result.total, max: result.max,
       perQuestion: result.perQuestion, sectionAgg: result.sectionAgg,
-      answers: Object.assign({}, state.currentAnswers)
+      answers: Object.assign({}, state.currentAnswers),
+      elapsedMs: elapsedMs, laps: laps
     };
     var subs = getSubs(); subs.push(sub); saveSubs(subs);
     var drafts = getDrafts(); delete drafts[state.user.key+'__'+exam.id]; saveDrafts(drafts);
+    stopExamTimerTick();
+    state.examTimer = null; state.examTimerExamId = null;
     setState({screen:'examResult', currentSubmission: sub, currentAnswers:null, resultOrigin:'list'});
   }
 
@@ -1017,6 +1233,7 @@ const auth = getAuth(fbApp);
       id: src.id,
       name: src.name.trim(),
       subject: (src.subject||'').trim(),
+      tags: (src.tagsText||'').split(/[,、]/).map(function(t){ return t.trim(); }).filter(function(t){ return t!==''; }),
       problemUrl: (src.problemUrl||'').trim(),
       explanationUrl: (src.explanationUrl||'').trim(),
       year: src.year,
@@ -1079,6 +1296,7 @@ const auth = getAuth(fbApp);
         var student = {type:'student', key:key};
         saveJSON(LS.USER, student);
         subscribeStudentData(key);
+        state.examTimer = null; state.examTimerExamId = null;
         setState({user:student, screen:'studentHome', studentTab:'list', error:null, keyInput:''});
       });
       // 管理者キーとして成功した場合はonAuthStateChangedが検知してadminHomeへ遷移する
@@ -1100,12 +1318,15 @@ const auth = getAuth(fbApp);
       var student = {type:'student', key: state.recoverResult.text};
       saveJSON(LS.USER, student);
       subscribeStudentData(student.key);
+      state.examTimer = null; state.examTimerExamId = null;
       setState({user:student, screen:'studentHome', studentTab:'list', recoverResult:null, recoverEmail:''});
     },
     logout: function(){
       localStorage.removeItem(LS.USER);
       stopAllSubscriptions();
+      stopExamTimerTick();
       examsCache = []; subsCache = []; draftsCache = {};
+      state.examTimer = null; state.examTimerExamId = null;
       if(state.user && state.user.type==='admin'){
         signOut(auth).catch(function(){});
         // signOut後はonAuthStateChangedが検知し、匿名サインインしてログイン画面に戻す
@@ -1122,9 +1343,48 @@ const auth = getAuth(fbApp);
       var saved = getDrafts()[state.user.key+'__'+eid];
       var answers = {};
       allQuestionsOf(exam).forEach(function(q){ answers[q.id] = (saved && saved[q.id]!=null) ? saved[q.id] : null; });
+      // 同じ模試に戻ってきた場合はこれまでの経過時間・ラップを引き継いで再開し、
+      // 別の模試を開いた場合はタイマーを新しく作り直す。いずれも自動的にスタートする。
+      if(!state.examTimer || state.examTimerExamId!==eid){
+        state.examTimer = makeBlankExamTimer();
+        state.examTimerExamId = eid;
+      }
+      state.examTimer.running = true;
+      state.examTimer.startedAt = Date.now();
       setState({screen:'examAnswer', currentExamId:eid, currentAnswers:answers});
     },
-    leaveAnswerScreen: function(){ setState({screen:'studentHome', studentTab:'list', currentExamId:null, currentAnswers:null}); },
+    leaveAnswerScreen: function(){
+      if(state.examTimer && state.examTimer.running){
+        state.examTimer.accumulatedMs = examTimerElapsedMs();
+        state.examTimer.running = false; state.examTimer.startedAt = null;
+      }
+      stopExamTimerTick();
+      setState({screen:'studentHome', studentTab:'list', currentExamId:null, currentAnswers:null});
+    },
+    toggleExamTimer: function(){
+      var t = state.examTimer;
+      if(!t) return;
+      if(t.running){
+        t.accumulatedMs = examTimerElapsedMs();
+        t.running = false; t.startedAt = null;
+        stopExamTimerTick();
+      } else {
+        t.running = true; t.startedAt = Date.now();
+      }
+      render();
+    },
+    recordExamLap: function(el){
+      var t = state.examTimer;
+      if(!t) return;
+      var secId = el.dataset.secid;
+      t.laps = t.laps.filter(function(l){ return l.sectionId!==secId; });
+      var totalNow = examTimerElapsedMs();
+      var prevTotal = t.laps.reduce(function(sum,l){ return sum+l.lapMs; }, 0);
+      var exam = getExams().filter(function(e){ return e.id===state.currentExamId; })[0];
+      var sec = exam ? (exam.sections||[]).filter(function(s){ return s.id===secId; })[0] : null;
+      t.laps.push({ sectionId:secId, sectionTitle: sec ? sec.title : '', lapMs: Math.max(0,totalNow-prevTotal), totalMs: totalNow });
+      render();
+    },
     pickAnswer: function(el){
       var qid = el.dataset.qid, num = Number(el.dataset.num);
       if(state.currentAnswers[qid]===num){ state.currentAnswers[qid]=null; } else { state.currentAnswers[qid]=num; }
@@ -1290,7 +1550,11 @@ const auth = getAuth(fbApp);
     if(el.type==='number'){ val = val===''? '' : Number(val); }
     setDeep(state, el.dataset.field, val);
   }
-  appEl.addEventListener('input', onFieldChange);
+  appEl.addEventListener('input', function(e){
+    onFieldChange(e);
+    var el = e.target.closest('[data-field]');
+    if(el && el.dataset.field==='trendFilterTag') drawTrendChart();
+  });
   appEl.addEventListener('change', function(e){
     onFieldChange(e);
     var el = e.target.closest('[data-field][data-rerender="true"]');
