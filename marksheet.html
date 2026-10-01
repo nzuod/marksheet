@@ -165,6 +165,16 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
 .bulk-paste-whole{ background:var(--surface); border-radius:var(--radius-m); padding:14px; margin-bottom:18px; border:1px dashed var(--accent); }
 .row{ display:flex; gap:8px; align-items:center; margin-bottom:8px; }
 .row input{ margin-top:0; }
+label.check{ display:flex; align-items:center; gap:8px; margin:10px 0; }
+label.check input{ width:auto; margin:0; }
+.cg-sub{ background:var(--surface-2); border:1px solid var(--line); border-radius:var(--radius-s); padding:10px; margin:8px 0; }
+.cg-sub .row:last-child{ margin-bottom:0; }
+.cg-sub label{ margin:8px 0; }
+.cg-result{ padding:10px 2px; border-bottom:1px solid var(--line); font-size:0.88rem; }
+.cg-result .cg-head{ display:flex; align-items:center; gap:12px; }
+.cg-result .cg-title{ font-weight:700; }
+.cg-result .cg-pts{ margin-left:auto; font-weight:700; }
+.cg-result .cg-detail{ color:var(--ink-soft); font-size:0.82rem; margin:4px 0 0 34px; line-height:1.5; }
 .table-scroll{ overflow-x:auto; }
 .q-table{ border-collapse:collapse; width:100%; min-width:520px; }
 .q-table th, .q-table td{ padding:6px; border-bottom:1px solid var(--line); font-size:0.82rem; text-align:left; }
@@ -424,6 +434,103 @@ const auth = getAuth(fbApp);
     return qs;
   }
 
+  // ---- 条件付き配点グループ（exam.conditionalGroups） ----
+  // 全角数字・全角カンマ等を許容して「番号の配列（文字列）」にする
+  function normalizeDigits(t){
+    return String(t==null?'':t).replace(/[０-９]/g, function(c){ return String.fromCharCode(c.charCodeAt(0)-0xFEE0); });
+  }
+  function parseNoList(text){
+    return normalizeDigits(text).split(/[,、，\s]+/).map(function(x){ return x.trim(); }).filter(function(x){ return x!==''; });
+  }
+  function parseValueList(text){
+    return parseNoList(text).filter(function(x){ return /^\d+$/.test(x); }).map(function(x){ return choiceValue(Number(x)); });
+  }
+  function sameMultiset(a, b){
+    if(a.length!==b.length) return false;
+    var x = a.slice().sort(function(m,n){ return m-n; });
+    var y = b.slice().sort(function(m,n){ return m-n; });
+    return x.every(function(v,i){ return v===y[i]; });
+  }
+  function hasDuplicate(vals){
+    var seen = {};
+    for(var i=0;i<vals.length;i++){ if(seen[vals[i]]) return true; seen[vals[i]] = true; }
+    return false;
+  }
+  function allowedKey(arr){ return (arr||[]).slice().sort(function(a,b){ return a-b; }).join(','); }
+
+  // 問題番号(no)の文字列一致で問題を解決する（同じ番号が複数ある場合は先に登録された方）
+  function findQuestionByNo(qs, no){
+    var key = String(no==null?'':no).trim();
+    for(var i=0;i<qs.length;i++){ if(String(qs[i].no).trim()===key) return qs[i]; }
+    return null;
+  }
+
+  // 1つの条件付き配点グループを判定する。戻り値: { correct: true|false|null, condText, nos, answerPairs }
+  //   correct === null は「未回答があり結果未確定」
+  function gradeConditionalGroup(cg, qs, answers){
+    function ansOf(no){ var q = findQuestionByNo(qs, no); return q ? { q:q, v:answers[q.id] } : { q:null, v:null }; }
+    function pairs(nos){ return nos.map(function(no){ var a = ansOf(no); return { no:String(no), value:(a.v==null?null:a.v) }; }); }
+    function vlist(arr){ return (arr||[]).join('・'); }
+
+    if(cg.mode==='branch'){
+      var trig = ansOf(cg.triggerNo);
+      var branches = cg.branches||[];
+      var modeLabel = cg.matchMode==='complete' ? '過不足なく一致' : 'それぞれ許容値のいずれか（重複不可）';
+      function describe(b){
+        return '問'+cg.triggerNo+'が'+b.when+' → 問'+(b.targets||[]).join('・問')+' が {'+vlist(b.allowed)+'}（'+modeLabel+'）';
+      }
+      var allText = branches.map(describe).join(' ／ ');
+      if(!trig.q) return { correct:false, condText:'トリガー問題（問'+cg.triggerNo+'）が見つかりません', nos:[String(cg.triggerNo)], answerPairs:[] };
+      if(trig.v==null) return { correct:null, condText:allText, nos:[String(cg.triggerNo)], answerPairs:pairs([cg.triggerNo]) };
+      var branch = branches.filter(function(b){ return b.when===trig.v; })[0];
+      if(!branch) return { correct:false, condText:allText, nos:[String(cg.triggerNo)], answerPairs:pairs([cg.triggerNo]) };
+      var tNos = branch.targets||[];
+      var allNos = [String(cg.triggerNo)].concat(tNos.map(String));
+      var resolved = tNos.map(ansOf);
+      var condText = describe(branch);
+      if(resolved.some(function(r){ return !r.q; })){
+        return { correct:false, condText:condText, nos:allNos, answerPairs:pairs(allNos) };
+      }
+      if(resolved.some(function(r){ return r.v==null; })){
+        return { correct:null, condText:condText, nos:allNos, answerPairs:pairs(allNos) };
+      }
+      var vals = resolved.map(function(r){ return r.v; });
+      var ok;
+      if(cg.matchMode==='complete'){
+        // 順不同の多重集合として、許容値と過不足なく一致
+        ok = sameMultiset(vals, branch.allowed||[]);
+      } else {
+        // 各問が独立に許容値のいずれか。ただし同じ値の使い回しは不可
+        ok = vals.every(function(v){ return (branch.allowed||[]).indexOf(v)!==-1; }) && !hasDuplicate(vals);
+      }
+      return { correct:ok, condText:condText, nos:allNos, answerPairs:pairs(allNos) };
+    }
+
+    // and（分岐なしのAND条件）
+    var targets = cg.targets||[];
+    var nos = targets.map(function(t){ return String(t.no); });
+    var condParts = targets.map(function(t){ return '問'+t.no+': '+vlist(t.allowed); });
+    var condText2 = condParts.join(' ／ ') + (cg.allowDuplicates ? '' : '（許容値が同じ問題どうしは同じ値の重複不可）');
+    var res = targets.map(function(t){ var a = ansOf(t.no); return { q:a.q, v:a.v, allowed:t.allowed||[] }; });
+    if(res.length===0 || res.some(function(r){ return !r.q; })){
+      return { correct:false, condText:condText2, nos:nos, answerPairs:pairs(nos) };
+    }
+    if(res.some(function(r){ return r.v==null; })){
+      return { correct:null, condText:condText2, nos:nos, answerPairs:pairs(nos) };
+    }
+    var ok2 = res.every(function(r){ return r.allowed.indexOf(r.v)!==-1; });
+    if(ok2 && !cg.allowDuplicates){
+      // 許容値の集合が同じ問題どうし（＝入れ替え可能な枠）で同じ値を選んでいたら不可
+      var byKey = {};
+      res.forEach(function(r){
+        var k = allowedKey(r.allowed);
+        (byKey[k] = byKey[k] || []).push(r.v);
+      });
+      Object.keys(byKey).forEach(function(k){ if(hasDuplicate(byKey[k])) ok2 = false; });
+    }
+    return { correct:ok2, condText:condText2, nos:nos, answerPairs:pairs(nos) };
+  }
+
   function gradeExam(exam, answers){
     var qs = allQuestionsOf(exam);
     var groupMap = {};
@@ -518,6 +625,22 @@ const auth = getAuth(fbApp);
       });
     });
 
+    // 条件付き配点グループ（各問の個別採点とは独立に、合計点・満点へ別加算する）
+    var conditionalResults = [];
+    (exam.conditionalGroups||[]).forEach(function(cg, idx){
+      var pts = Number(cg.points)||0;
+      max += pts;
+      var r = gradeConditionalGroup(cg, qs, answers);
+      var earned = r.correct===true ? pts : 0;
+      total += earned;
+      conditionalResults.push({
+        id: cg.id, label: (cg.label && cg.label.trim()) ? cg.label.trim() : ('条件付き配点 '+(idx+1)),
+        mode: cg.mode==='branch' ? 'branch' : 'and',
+        correct: r.correct, earned: earned, points: pts,
+        condText: r.condText, answerPairs: r.answerPairs
+      });
+    });
+
     var sectionAgg = {};
     (exam.sections||[]).forEach(function(sec){ sectionAgg[sec.id] = {title:sec.title, earned:0, max:0}; });
     var countedGroups = {};
@@ -535,11 +658,11 @@ const auth = getAuth(fbApp);
       }
     });
 
-    return { total:total, max:max, perQuestion:perQuestion, sectionAgg:sectionAgg };
+    return { total:total, max:max, perQuestion:perQuestion, sectionAgg:sectionAgg, conditionalResults:conditionalResults };
   }
 
   function makeBlankExam(){
-    return { id:uid('exam'), name:'', subject:'', problemUrl:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:4, sections:[], groups:[], tags:[] };
+    return { id:uid('exam'), name:'', subject:'', problemUrl:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:4, sections:[], groups:[], conditionalGroups:[], tags:[] };
   }
 
   // ---- 解答タイマー（模試を開くと自動スタートし、大問ごとにラップを記録する） ----
@@ -578,6 +701,19 @@ const auth = getAuth(fbApp);
     var clone = JSON.parse(JSON.stringify(exam));
     clone.groups = (clone.groups||[]).map(function(g){
       return { groupId:g.groupId, points:g.points, mode: g.mode==='individual' ? 'individual' : 'combo', combosText:(g.combos||[]).map(function(c){ return c.join(','); }) };
+    });
+    clone.conditionalGroups = (clone.conditionalGroups||[]).map(function(cg){
+      var isBranch = cg.mode==='branch';
+      return {
+        id: cg.id || uid('cg'), label: cg.label||'', mode: isBranch ? 'branch' : 'and', points: cg.points,
+        allowDuplicates: !!cg.allowDuplicates,
+        andTargets: isBranch ? [{no:'', allowedText:''}] : (cg.targets||[]).map(function(t){ return { no:String(t.no), allowedText:(t.allowed||[]).join(',') }; }),
+        triggerNo: cg.triggerNo!=null ? String(cg.triggerNo) : '',
+        matchMode: cg.matchMode==='complete' ? 'complete' : 'multi',
+        branches: isBranch ? (cg.branches||[]).map(function(b){
+          return { whenText:String(b.when), targetsText:(b.targets||[]).join(','), allowedText:(b.allowed||[]).join(',') };
+        }) : [{ whenText:'', targetsText:'', allowedText:'' }]
+      };
     });
     clone.sections = (clone.sections||[]).map(function(sec){
       return {
@@ -962,6 +1098,15 @@ const auth = getAuth(fbApp);
       var correctAnsHtml = correctLabel!=null ? '<span class="ans">正解: '+esc(correctLabel)+'</span>' : '';
       return '<div class="q-result-row"><span class="qn">'+esc(q.no)+'</span>'+status+'<span class="ya">あなたの解答: '+esc(String(yourAns))+'</span>'+correctAnsHtml+'</div>';
     }).join('');
+    var cgRows = (sub.conditionalResults||[]).map(function(c){
+      var st = c.correct===true ? '<span class="mark ok">○</span>' : c.correct===false ? '<span class="mark ng">×</span>' : '<span class="mark unknown">―</span>';
+      var ansText = (c.answerPairs||[]).map(function(a){ return '問'+a.no+'='+(a.value==null?'未回答':a.value); }).join('、');
+      var detail = esc('あなたの解答: '+ansText);
+      if(c.correct!==true && c.condText) detail += '<br>'+esc('条件: '+c.condText);
+      return '<div class="cg-result"><div class="cg-head">'+st+'<span class="cg-title">'+esc(c.label)+'</span><span class="cg-pts">+'+c.earned+' / '+c.points+'点</span></div>'
+        + '<div class="cg-detail">'+detail+'</div></div>';
+    }).join('');
+    var cgHtml = cgRows ? '<h2>条件付き配点</h2><div class="q-result-list">'+cgRows+'</div>' : '';
     return ''
       + '<div class="topbar"><button class="btn-link" data-action="backFromResult">← 戻る</button><h1>結果</h1><div></div></div>'
       + '<div class="score-hero"><div class="score-num">'+sub.total+'<span class="score-max">/ '+sub.max+'点</span></div><div class="score-rate">正答率 '+rate+'%</div>'
@@ -970,6 +1115,7 @@ const auth = getAuth(fbApp);
       + (exam && exam.explanationUrl ? '<a class="explanation-link" href="'+esc(exam.explanationUrl)+'" target="_blank" rel="noopener noreferrer">解説</a>' : '')
       + '<h2>大問別結果</h2><div class="result-table">'+sectionRows+'</div>'
       + '<h2>問題ごとの結果</h2><div class="q-result-list">'+qRows+'</div>'
+      + cgHtml
       + '<button class="btn btn-secondary btn-block" style="margin-top:20px" data-action="backFromResult">← 戻る</button>';
   }
 
@@ -1071,6 +1217,7 @@ const auth = getAuth(fbApp);
     var exam = state.editingExam;
     var sectionsHtml = (exam.sections||[]).map(function(sec, si){ return renderSectionEditor(sec, si, exam.groups); }).join('') || '<p class="hint">まだ大問がありません。</p>';
     var groupsHtml = (exam.groups||[]).map(function(g, gi){ return renderGroupEditor(g, gi); }).join('');
+    var cgHtml = (exam.conditionalGroups||[]).map(function(cg, ci){ return renderCondGroupEditor(cg, ci); }).join('');
     return ''
       + '<div class="topbar"><button class="btn-link" data-action="cancelEdit">← 戻る</button><h1>模試の編集</h1><button class="btn btn-primary" data-action="saveExam">保存</button></div>'
       + '<label>模試名<input data-field="editingExam.name" value="'+esc(exam.name)+'" placeholder="例: 第1回 全統マーク模試・国語"></label>'
@@ -1090,7 +1237,62 @@ const auth = getAuth(fbApp);
       + '「順不同の組み合わせ」モードでは正解の組み合わせを登録します（並び順は問いません。例: 2,6 と登録すれば 6,2 と答えても正解、4,6,9 と登録すればその並び替えもすべて正解になります）。<br>'
       + '「全問正解でまとめて配点」モードでは、各問題は自分自身の正解を持ち（問題側の「正解」欄に入力）、グループ内の全問に正解した場合だけ、このグループの配点がまとめて加算されます（部分点なし。例: 問21〜24を同じグループIDにして配点4にすれば、4問すべて正解したときだけ4点）。</p>'
       + groupsHtml
-      + '<button class="btn btn-secondary" data-action="addGroup">＋ グループを追加</button>';
+      + '<button class="btn btn-secondary" data-action="addGroup">＋ グループを追加</button>'
+      + '<h2>条件付き配点グループ</h2>'
+      + '<p class="hint">各問の個別配点とは別に、条件を満たしたときだけ合計点・満点へ加算されるボーナス配点です（上の完全解答グループと同様、対象問題自体の採点には影響しません）。対象問題は「問題番号」の文字列一致で指定します。<br>'
+      + '<b>AND条件</b>: 対象の問題ごとに許容する解答値を指定し、全問が許容値に入ったときだけ加点します。<br>'
+      + '<b>トリガー分岐</b>: トリガー問題の解答値ごとに、判定する対象問題と許容値が切り替わります。トリガーの値に合う分岐がなければ加点なしです。</p>'
+      + cgHtml
+      + '<button class="btn btn-secondary" data-action="addCondGroup">＋ 条件付き配点グループを追加</button>';
+  }
+
+  function renderCondGroupEditor(cg, ci){
+    var base = 'editingExam.conditionalGroups.'+ci;
+    var isBranch = cg.mode==='branch';
+    var body;
+    if(!isBranch){
+      var rows = (cg.andTargets||[]).map(function(t, ti){
+        return '<div class="row"><input type="text" style="width:5em" placeholder="問題番号" data-field="'+base+'.andTargets.'+ti+'.no" value="'+esc(t.no)+'">'
+          + '<input type="text" placeholder="許容値 例: 1,4" data-field="'+base+'.andTargets.'+ti+'.allowedText" value="'+esc(t.allowedText)+'">'
+          + '<button class="btn-link danger" data-action="removeCondTarget" data-ci="'+ci+'" data-ti="'+ti+'">×</button></div>';
+      }).join('');
+      body = '<p class="hint">対象問題と、その問題で許容する解答値（カンマ区切り）を指定します。1問でも許容値の外、または未回答なら加点されません（未回答を含む場合は結果画面で「―」表示）。</p>'
+        + '<div class="cg-sub">' + rows
+        + '<button class="btn-link" data-action="addCondTarget" data-ci="'+ci+'">＋ 対象問題を追加</button></div>'
+        + '<label class="check"><input type="checkbox" data-field="'+base+'.allowDuplicates" '+(cg.allowDuplicates?'checked':'')+'>同じ値の重複を許可する</label>'
+        + '<p class="hint">オフの場合、許容値の集合が同じ問題どうし（例: 問21と問22がどちらも {1,4}）が同じ値を選ぶと不可になります。許容値が異なる問題（例: {4} の問23）とは重複しても構いません。</p>';
+    } else {
+      var brs = (cg.branches||[]).map(function(b, bi){
+        return '<div class="cg-sub">'
+          + '<div class="row"><input type="text" style="width:6em" placeholder="トリガー値" data-field="'+base+'.branches.'+bi+'.whenText" value="'+esc(b.whenText)+'">'
+          + '<span class="hint">のとき</span>'
+          + '<button class="btn-link danger" style="margin-left:auto" data-action="removeCondBranch" data-ci="'+ci+'" data-bi="'+bi+'">削除</button></div>'
+          + '<label>対象問題番号（カンマ区切り 例: 29,30）<input type="text" data-field="'+base+'.branches.'+bi+'.targetsText" value="'+esc(b.targetsText)+'"></label>'
+          + '<label>許容値（カンマ区切り 例: 1,3）<input type="text" data-field="'+base+'.branches.'+bi+'.allowedText" value="'+esc(b.allowedText)+'"></label>'
+          + '</div>';
+      }).join('');
+      body = '<div class="row"><label style="flex:1;margin:0">トリガー問題番号<input type="text" data-field="'+base+'.triggerNo" value="'+esc(cg.triggerNo)+'" placeholder="例: 28"></label></div>'
+        + '<label>判定方法<select data-field="'+base+'.matchMode" data-rerender="true">'
+        + '<option value="multi" '+(cg.matchMode!=='complete'?'selected':'')+'>複数回答式（各問が許容値のいずれか・同じ値の重複不可）</option>'
+        + '<option value="complete" '+(cg.matchMode==='complete'?'selected':'')+'>完全解答式（対象問題の解答が順不同で許容値と過不足なく一致）</option>'
+        + '</select></label>'
+        + '<p class="hint">'+(cg.matchMode==='complete'
+            ? '許容値の個数は対象問題の数と同じにしてください（例: 対象2問・許容値 1,3 → 2問で1と3を1つずつ使えば正解）。'
+            : '例: 対象2問・許容値 1,3 → 各問が1か3のどちらかで、2問が同じ値でなければ正解。対象1問・許容値1個なら「その問題の答え＝許容値」という意味になります。')+'</p>'
+        + brs
+        + '<button class="btn-link" data-action="addCondBranch" data-ci="'+ci+'">＋ 分岐を追加</button>';
+    }
+    return ''
+      + '<div class="group-editor">'
+      + '<div class="row"><input data-field="'+base+'.label" value="'+esc(cg.label||'')+'" placeholder="名称（任意。結果画面に表示）">'
+      + '<input type="number" style="width:6em" data-field="'+base+'.points" value="'+(cg.points==null?'':cg.points)+'" placeholder="配点">'
+      + '<button class="btn-link danger" data-action="removeCondGroup" data-ci="'+ci+'">削除</button></div>'
+      + '<label>モード<select data-field="'+base+'.mode" data-rerender="true">'
+      + '<option value="and" '+(!isBranch?'selected':'')+'>AND条件（分岐なし）</option>'
+      + '<option value="branch" '+(isBranch?'selected':'')+'>トリガー問題による分岐</option>'
+      + '</select></label>'
+      + body
+      + '</div>';
   }
 
   function renderWholeBulkBox(exam){
@@ -1215,7 +1417,7 @@ const auth = getAuth(fbApp);
     var sub = {
       id: uid('sub'), examId: exam.id, examName: exam.name, examTags: (exam.tags||[]).slice(), studentKey: state.user.key,
       submittedAt: Date.now(), total: result.total, max: result.max,
-      perQuestion: result.perQuestion, sectionAgg: result.sectionAgg,
+      perQuestion: result.perQuestion, sectionAgg: result.sectionAgg, conditionalResults: result.conditionalResults,
       answers: Object.assign({}, state.currentAnswers),
       elapsedMs: elapsedMs, laps: laps
     };
@@ -1273,6 +1475,61 @@ const auth = getAuth(fbApp);
         };
       }).filter(function(g){ return g.groupId; })
     };
+    // 条件付き配点グループ
+    var allQs = [];
+    finalized.sections.forEach(function(sec){ sec.questions.forEach(function(q){ allQs.push(q); }); });
+    var cgError = null;
+    function noExists(no){ return !!findQuestionByNo(allQs, no); }
+    finalized.conditionalGroups = [];
+    (src.conditionalGroups||[]).forEach(function(cg, idx){
+      if(cgError) return;
+      var name = '条件付き配点グループ'+(idx+1);
+      var pts = Number(cg.points)||0;
+      var out = { id: cg.id || uid('cg'), label: (cg.label||'').trim(), mode: cg.mode==='branch' ? 'branch' : 'and', points: pts };
+      if(out.mode==='and'){
+        var targets = (cg.andTargets||[]).map(function(t){
+          return { no: parseNoList(t.no)[0] || '', allowed: parseValueList(t.allowedText) };
+        }).filter(function(t){ return t.no!=='' || t.allowed.length>0; });
+        if(targets.length===0){ cgError = name+'：対象問題を入力してください'; return; }
+        for(var i=0;i<targets.length;i++){
+          if(targets[i].no===''){ cgError = name+'：問題番号が空の行があります'; return; }
+          if(!noExists(targets[i].no)){ cgError = name+'：問'+targets[i].no+' という問題が見つかりません'; return; }
+          if(targets[i].allowed.length===0){ cgError = name+'：問'+targets[i].no+' の許容値を入力してください'; return; }
+        }
+        out.targets = targets;
+        out.allowDuplicates = !!cg.allowDuplicates;
+      } else {
+        var trig = parseNoList(cg.triggerNo)[0] || '';
+        if(trig===''){ cgError = name+'：トリガー問題番号を入力してください'; return; }
+        if(!noExists(trig)){ cgError = name+'：トリガー問題 問'+trig+' が見つかりません'; return; }
+        out.triggerNo = trig;
+        out.matchMode = cg.matchMode==='complete' ? 'complete' : 'multi';
+        var seenWhen = {};
+        var branches = [];
+        for(var bi=0; bi<(cg.branches||[]).length; bi++){
+          var b = cg.branches[bi];
+          var whenArr = parseValueList(b.whenText);
+          var tg = parseNoList(b.targetsText);
+          var al = parseValueList(b.allowedText);
+          if(whenArr.length===0 && tg.length===0 && al.length===0) continue;
+          if(whenArr.length!==1){ cgError = name+'：分岐'+(bi+1)+' のトリガー値は数字1つで入力してください'; return; }
+          if(tg.length===0){ cgError = name+'：分岐'+(bi+1)+' の対象問題を入力してください'; return; }
+          for(var k=0;k<tg.length;k++){
+            if(!noExists(tg[k])){ cgError = name+'：分岐'+(bi+1)+' の問'+tg[k]+' が見つかりません'; return; }
+          }
+          if(al.length===0){ cgError = name+'：分岐'+(bi+1)+' の許容値を入力してください'; return; }
+          if(out.matchMode==='complete' && al.length!==tg.length){ cgError = name+'：分岐'+(bi+1)+' は完全解答式のため、許容値の個数を対象問題の数（'+tg.length+'）に揃えてください'; return; }
+          if(seenWhen[whenArr[0]]){ cgError = name+'：トリガー値 '+whenArr[0]+' の分岐が重複しています'; return; }
+          seenWhen[whenArr[0]] = true;
+          branches.push({ when: whenArr[0], targets: tg, allowed: al });
+        }
+        if(branches.length===0){ cgError = name+'：分岐を1つ以上入力してください'; return; }
+        out.branches = branches;
+      }
+      finalized.conditionalGroups.push(out);
+    });
+    if(cgError){ showToast(cgError); return; }
+
     var exams = getExams();
     var idx = -1;
     for(var i=0;i<exams.length;i++){ if(exams[i].id===finalized.id){ idx=i; break; } }
@@ -1470,6 +1727,28 @@ const auth = getAuth(fbApp);
       state.editingExam.groups[gi].combosText.splice(ci,1);
       render();
     },
+    addCondGroup: function(){
+      state.editingExam.conditionalGroups = state.editingExam.conditionalGroups || [];
+      state.editingExam.conditionalGroups.push({
+        id:uid('cg'), label:'', mode:'and', points:0, allowDuplicates:false,
+        andTargets:[{no:'', allowedText:''}],
+        triggerNo:'', matchMode:'multi', branches:[{whenText:'', targetsText:'', allowedText:''}]
+      });
+      render();
+    },
+    removeCondGroup: function(el){ state.editingExam.conditionalGroups.splice(Number(el.dataset.ci),1); render(); },
+    addCondTarget: function(el){ state.editingExam.conditionalGroups[Number(el.dataset.ci)].andTargets.push({no:'', allowedText:''}); render(); },
+    removeCondTarget: function(el){
+      var cg = state.editingExam.conditionalGroups[Number(el.dataset.ci)];
+      cg.andTargets.splice(Number(el.dataset.ti),1);
+      render();
+    },
+    addCondBranch: function(el){ state.editingExam.conditionalGroups[Number(el.dataset.ci)].branches.push({whenText:'', targetsText:'', allowedText:''}); render(); },
+    removeCondBranch: function(el){
+      var cg = state.editingExam.conditionalGroups[Number(el.dataset.ci)];
+      cg.branches.splice(Number(el.dataset.bi),1);
+      render();
+    },
     applyWholeBulk: function(){
       var rows = parseWholeBulkRows(state.editingExam.wholeBulkText);
       if(rows.length===0){ showToast('貼り付けたデータから大問・番号・解答を読み取れませんでした'); return; }
@@ -1547,7 +1826,8 @@ const auth = getAuth(fbApp);
     var el = e.target.closest('[data-field]');
     if(!el) return;
     var val = el.value;
-    if(el.type==='number'){ val = val===''? '' : Number(val); }
+    if(el.type==='checkbox'){ val = el.checked; }
+    else if(el.type==='number'){ val = val===''? '' : Number(val); }
     setDeep(state, el.dataset.field, val);
   }
   appEl.addEventListener('input', function(e){
