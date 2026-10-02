@@ -170,6 +170,15 @@ label.check input{ width:auto; margin:0; }
 .cg-sub{ background:var(--surface-2); border:1px solid var(--line); border-radius:var(--radius-s); padding:10px; margin:8px 0; }
 .cg-sub .row:last-child{ margin-bottom:0; }
 .cg-sub label{ margin:8px 0; }
+.pts-box{ background:var(--surface); border-radius:var(--radius-m); padding:14px; margin:18px 0; border:1px solid var(--line); }
+.pts-box h3{ font-family:var(--font-display); font-size:0.95rem; margin:0 0 8px; }
+.pts-table{ border-collapse:collapse; width:100%; font-size:0.82rem; font-variant-numeric:tabular-nums; }
+.pts-table th, .pts-table td{ padding:6px 4px; border-bottom:1px solid var(--line); text-align:right; }
+.pts-table th:first-child, .pts-table td:first-child{ text-align:left; }
+.pts-table th{ color:var(--ink-soft); font-weight:500; }
+.pts-table tr.total td{ font-weight:700; border-bottom:none; }
+.pts-warn{ color:var(--warn); background:var(--warn-soft); border-radius:var(--radius-s); padding:8px 10px; margin:8px 0 0; font-size:0.8rem; line-height:1.55; }
+.pts-bar{ position:sticky; bottom:calc(10px + env(safe-area-inset-bottom,0px)); z-index:20; margin-top:18px; background:var(--accent); color:var(--accent-contrast); border-radius:100px; padding:9px 16px; font-size:0.85rem; font-weight:700; text-align:center; box-shadow:0 2px 10px rgba(0,0,0,.25); }
 .cg-result{ padding:10px 2px; border-bottom:1px solid var(--line); font-size:0.88rem; }
 .cg-result .cg-head{ display:flex; align-items:center; gap:12px; }
 .cg-result .cg-title{ font-weight:700; }
@@ -434,6 +443,146 @@ const auth = getAuth(fbApp);
     return qs;
   }
 
+  // 条件付き配点グループの加点を、どの大問に計上するか決める。
+  // 管理画面で大問を指定していればそれ、なければ「最初の対象問題が属する大問」。
+  // 保存済みの形式(targets/branches[].targets)と編集中の形式(andTargets/branches[].targetsText)の両方を受け付ける。
+  function condGroupSectionId(sections, cg){
+    sections = sections || [];
+    if(cg.sectionId){
+      for(var i=0;i<sections.length;i++){ if(sections[i].id===cg.sectionId) return cg.sectionId; }
+    }
+    var firstNo = null;
+    var editing = (cg.andTargets!==undefined || (cg.branches && cg.branches[0] && cg.branches[0].targetsText!==undefined));
+    if(cg.mode==='branch'){
+      (cg.branches||[]).forEach(function(b){
+        if(firstNo!=null) return;
+        var list = editing ? parseNoList(b.targetsText) : (b.targets||[]);
+        if(list.length) firstNo = String(list[0]);
+      });
+    } else {
+      (editing ? (cg.andTargets||[]) : (cg.targets||[])).forEach(function(t){
+        if(firstNo!=null) return;
+        var no = editing ? parseNoList(t.no)[0] : t.no;
+        if(no!=null && String(no)!=='') firstNo = String(no);
+      });
+    }
+    if(firstNo==null) return null;
+    for(var si=0; si<sections.length; si++){
+      var qs = sections[si].questions||[];
+      for(var qi=0; qi<qs.length; qi++){
+        if(String(qs[qi].no).trim()===String(firstNo).trim()) return sections[si].id;
+      }
+    }
+    return null;
+  }
+
+  // 管理画面用：編集中の模試の配点内訳（大問ごと／総合点）を、採点処理(gradeExam)と同じ規則で数える。
+  function computePointsSummary(exam){
+    var sections = exam.sections||[];
+    var rows = sections.map(function(sec, si){
+      return { id:sec.id, title:(sec.title||'').trim() || ('大問'+(si+1)), n:(sec.questions||[]).length, q:0, grp:0, cond:0 };
+    });
+    var rowById = {};
+    rows.forEach(function(r){ rowById[r.id] = r; });
+    var groupMap = {};
+    (exam.groups||[]).forEach(function(g){ var id=(g.groupId||'').trim(); if(id) groupMap[id] = g; });
+    var warnings = [];
+    var counted = {};
+    sections.forEach(function(sec, si){
+      (sec.questions||[]).forEach(function(q){
+        var type = q.type||'normal';
+        var pts = Number(q.points)||0;
+        if(type==='complete'){
+          var gid = (q.groupId||'').trim();
+          if(!gid){ warnings.push('問'+q.no+'：完全解答なのにグループIDが空です（採点・配点の対象外になります）'); return; }
+          if(pts) warnings.push('問'+q.no+'：完全解答の問題自身の配点（'+pts+'）は加算されません。配点はグループ側に入力してください');
+          if(!counted[gid]){
+            counted[gid] = true;
+            var g = groupMap[gid];
+            if(!g) warnings.push('グループID「'+gid+'」が完全解答グループに登録されていません（0点扱い）');
+            else rows[si].grp += Number(g.points)||0;
+          }
+        } else {
+          rows[si].q += pts;
+        }
+      });
+    });
+    sections.forEach(function(sec, si){
+      if(!(sec.title||'').trim()) warnings.push('大問'+(si+1)+'番目：タイトルが空です（結果画面では「大問'+(si+1)+'」と表示されます）');
+    });
+    Object.keys(groupMap).forEach(function(gid){
+      if(!counted[gid]) warnings.push('完全解答グループ「'+gid+'」（'+(Number(groupMap[gid].points)||0)+'点）は、どの問題からも使われていないため加算されません');
+    });
+    var unassigned = 0;
+    (exam.conditionalGroups||[]).forEach(function(cg, i){
+      var pts = Number(cg.points)||0;
+      var sid = condGroupSectionId(sections, cg);
+      if(sid && rowById[sid]) rowById[sid].cond += pts;
+      else { unassigned += pts; warnings.push('条件付き配点グループ'+(i+1)+'：対象問題が見つからず、大問に計上できません（総合点には加算されます）'); }
+    });
+    var tq=0, tg=0, tc=unassigned;
+    rows.forEach(function(r){ tq+=r.q; tg+=r.grp; tc+=r.cond; });
+    return { rows:rows, unassigned:unassigned, totalQ:tq, totalG:tg, totalC:tc, total:tq+tg+tc, warnings:warnings };
+  }
+
+  function renderPointsSummaryHtml(exam){
+    var sm = computePointsSummary(exam);
+    var body = sm.rows.map(function(r){
+      return '<tr><td>'+esc(r.title)+'</td><td>'+r.n+'</td><td>'+r.q+'</td><td>'+r.grp+'</td><td>'+r.cond+'</td><td><b>'+(r.q+r.grp+r.cond)+'</b></td></tr>';
+    }).join('');
+    if(sm.unassigned){ body += '<tr><td>（大問未計上）</td><td>―</td><td>0</td><td>0</td><td>'+sm.unassigned+'</td><td><b>'+sm.unassigned+'</b></td></tr>'; }
+    var warn = sm.warnings.map(function(w){ return '<div class="pts-warn">'+esc(w)+'</div>'; }).join('');
+    return ''
+      + '<h3>配点の確認</h3>'
+      + (sm.rows.length ? '<div class="table-scroll"><table class="pts-table"><thead><tr><th>大問</th><th>問数</th><th>個別問題</th><th>完全解答G</th><th>条件付き</th><th>計</th></tr></thead><tbody>'
+        + body
+        + '<tr class="total"><td>総合点（満点）</td><td></td><td>'+sm.totalQ+'</td><td>'+sm.totalG+'</td><td>'+sm.totalC+'</td><td>'+sm.total+'</td></tr>'
+        + '</tbody></table></div>' : '<p class="hint">大問を追加すると、ここに配点の内訳が表示されます。</p>')
+      + '<p class="hint" style="margin:8px 0 0">結果画面の満点・大問別の点数も、この内訳と同じ数え方で計算されます。「個別問題」は通常・複数回答の配点の合計です。</p>'
+      + warn;
+  }
+  function renderPointsBarText(exam){
+    var sm = computePointsSummary(exam);
+    return '満点 '+sm.total+'点（個別 '+sm.totalQ+' ＋ 完全解答G '+sm.totalG+' ＋ 条件付き '+sm.totalC+'）';
+  }
+  function updatePointsSummary(){
+    if(!state.editingExam || state.screen!=='examEdit') return;
+    var box = document.getElementById('pointsSummary');
+    var bar = document.getElementById('ptsBar');
+    if(box) box.innerHTML = renderPointsSummaryHtml(state.editingExam);
+    if(bar) bar.textContent = renderPointsBarText(state.editingExam);
+  }
+
+  // 大問別集計を「模試に登録された大問の順」の配列にして返す。
+  // Firestoreはマップのキー順を保持しない（ID順に並べ替えて返す）ため、保存済みの sectionAgg の
+  // キー順には頼れない。模試が削除済みなどで大問が見つからない分は、末尾にキー順で付ける。
+  function orderedSectionAgg(sub, exam){
+    var agg = (sub && sub.sectionAgg) || {};
+    // 旧形式の提出結果（条件付き配点が大問別に含まれていない）は、表示時に補う
+    if(sub && sub.sectionAggVersion!==2 && exam && (sub.conditionalResults||[]).length){
+      var patched = {};
+      Object.keys(agg).forEach(function(k){ patched[k] = Object.assign({}, agg[k]); });
+      sub.conditionalResults.forEach(function(c){
+        var cg = (exam.conditionalGroups||[]).filter(function(x){ return x.id===c.id; })[0];
+        if(!cg) return;
+        var sid = condGroupSectionId(exam.sections, cg);
+        if(sid && patched[sid]){ patched[sid].earned += (Number(c.earned)||0); patched[sid].max += (Number(c.points)||0); }
+      });
+      agg = patched;
+    }
+    var out = [], seen = {};
+    // 提出時に保存した大問の順を最優先（模試を後から作り直して大問IDが変わっても、順序が崩れない）
+    var saved = (sub && Array.isArray(sub.sectionOrder)) ? sub.sectionOrder : [];
+    saved.forEach(function(id){ if(agg[id] && !seen[id]){ out.push({ id:id, data:agg[id] }); seen[id] = true; } });
+    ((exam && exam.sections) || []).forEach(function(sec){
+      if(agg[sec.id] && !seen[sec.id]){ out.push({ id:sec.id, data:agg[sec.id] }); seen[sec.id] = true; }
+    });
+    var known = out.length>0;
+    Object.keys(agg).forEach(function(id){ if(!seen[id]) out.push({ id:id, data:agg[id] }); });
+    out.orderKnown = known && out.length===Object.keys(agg).length;
+    return out;
+  }
+
   // ---- 条件付き配点グループ（exam.conditionalGroups） ----
   // 全角数字・全角カンマ等を許容して「番号の配列（文字列）」にする
   function normalizeDigits(t){
@@ -637,12 +786,13 @@ const auth = getAuth(fbApp);
         id: cg.id, label: (cg.label && cg.label.trim()) ? cg.label.trim() : ('条件付き配点 '+(idx+1)),
         mode: cg.mode==='branch' ? 'branch' : 'and',
         correct: r.correct, earned: earned, points: pts,
+        sectionId: condGroupSectionId(exam.sections, cg),
         condText: r.condText, answerPairs: r.answerPairs
       });
     });
 
     var sectionAgg = {};
-    (exam.sections||[]).forEach(function(sec){ sectionAgg[sec.id] = {title:sec.title, earned:0, max:0}; });
+    (exam.sections||[]).forEach(function(sec, si){ sectionAgg[sec.id] = {title:((sec.title||'').trim() || ('大問'+(si+1))), earned:0, max:0}; });
     var countedGroups = {};
     qs.forEach(function(q){
       var r = perQuestion[q.id];
@@ -658,7 +808,15 @@ const auth = getAuth(fbApp);
       }
     });
 
-    return { total:total, max:max, perQuestion:perQuestion, sectionAgg:sectionAgg, conditionalResults:conditionalResults };
+    // 条件付き配点グループの加点・配点も、計上先の大問の集計に含める（大問別の合計＝総合点になる）
+    conditionalResults.forEach(function(c){
+      if(c.sectionId && sectionAgg[c.sectionId]){
+        sectionAgg[c.sectionId].earned += c.earned;
+        sectionAgg[c.sectionId].max += c.points;
+      }
+    });
+
+    return { total:total, max:max, perQuestion:perQuestion, sectionAgg:sectionAgg, sectionAggVersion:2, sectionOrder:(exam.sections||[]).map(function(sec){ return sec.id; }), conditionalResults:conditionalResults };
   }
 
   function makeBlankExam(){
@@ -705,7 +863,7 @@ const auth = getAuth(fbApp);
     clone.conditionalGroups = (clone.conditionalGroups||[]).map(function(cg){
       var isBranch = cg.mode==='branch';
       return {
-        id: cg.id || uid('cg'), label: cg.label||'', mode: isBranch ? 'branch' : 'and', points: cg.points,
+        id: cg.id || uid('cg'), label: cg.label||'', sectionId: cg.sectionId||'', mode: isBranch ? 'branch' : 'and', points: cg.points,
         allowDuplicates: !!cg.allowDuplicates,
         andTargets: isBranch ? [{no:'', allowedText:''}] : (cg.targets||[]).map(function(t){ return { no:String(t.no), allowedText:(t.allowed||[]).join(',') }; }),
         triggerNo: cg.triggerNo!=null ? String(cg.triggerNo) : '',
@@ -979,8 +1137,9 @@ const auth = getAuth(fbApp);
     } else if(state.trendMetric==='section'){
       var namesOrder = [];
       list.forEach(function(s){
-        Object.keys(s.sectionAgg||{}).forEach(function(sid){
-          var nm = s.sectionAgg[sid].title || '大問';
+        var ex = getExams().filter(function(e){ return e.id===s.examId; })[0];
+        orderedSectionAgg(s, ex).forEach(function(ent){
+          var nm = ent.data.title || '大問';
           if(namesOrder.indexOf(nm)===-1) namesOrder.push(nm);
         });
       });
@@ -988,8 +1147,8 @@ const auth = getAuth(fbApp);
       drawAxes(vmax, function(v){ return Math.round(v)+'%'; });
       namesOrder.slice(0,6).forEach(function(nm, ni){
         var vals = list.map(function(s){
-          var agg = s.sectionAgg||{};
-          var hit = Object.keys(agg).map(function(sid){ return agg[sid]; }).filter(function(a){ return (a.title||'大問')===nm; })[0];
+          var ex2 = getExams().filter(function(e){ return e.id===s.examId; })[0];
+          var hit = orderedSectionAgg(s, ex2).map(function(ent){ return ent.data; }).filter(function(a){ return (a.title||'大問')===nm; })[0];
           if(!hit || !hit.max) return null;
           return hit.earned/hit.max*100;
         });
@@ -1081,12 +1240,20 @@ const auth = getAuth(fbApp);
     var rate = sub.max>0 ? Math.round(sub.total/sub.max*1000)/10 : 0;
     var lapsById = {};
     (sub.laps||[]).forEach(function(l){ lapsById[l.sectionId] = l; });
-    var sectionRows = Object.keys(sub.sectionAgg).map(function(sid){
-      var s = sub.sectionAgg[sid];
+    var secList = orderedSectionAgg(sub, exam);
+    var secSumMax = 0, secSumEarned = 0;
+    secList.forEach(function(ent){ secSumMax += (Number(ent.data.max)||0); secSumEarned += (Number(ent.data.earned)||0); });
+    var sectionRows = secList.map(function(ent, idx){
+      var sid = ent.id, s = ent.data;
       var pct = s.max>0 ? Math.round(s.earned/s.max*1000)/10 : 0;
       var lap = lapsById[sid];
-      return '<div class="result-row"><span>'+esc(s.title)+'</span><span>'+s.earned+' / '+s.max+'点（'+pct+'%）</span>'+(lap?'<span>'+formatDuration(lap.lapMs)+'</span>':'')+'</div>';
+      var secTitle = (s.title||'').trim() || (secList.orderKnown ? '大問'+(idx+1) : '（名称未設定）');
+      return '<div class="result-row"><span>'+esc(secTitle)+'</span><span>'+s.earned+' / '+s.max+'点（'+pct+'%）</span>'+(lap?'<span>'+formatDuration(lap.lapMs)+'</span>':'')+'</div>';
     }).join('');
+    // 大問別の合計が総合点と合わないとき（古い形式で保存された結果など）は、差分を隠さず別行で見せる
+    if(secSumMax!==sub.max || secSumEarned!==sub.total){
+      sectionRows += '<div class="result-row"><span>（大問に含まれない配点）</span><span>'+(sub.total-secSumEarned)+' / '+(sub.max-secSumMax)+'点</span></div>';
+    }
     var qs = exam ? allQuestionsOf(exam) : [];
     var qRows = qs.map(function(q){
       var r = sub.perQuestion[q.id];
@@ -1228,6 +1395,7 @@ const auth = getAuth(fbApp);
       + '<label>問題URL（任意。入力すると解答画面に「問題」というリンクが表示されます）<input type="text" data-field="editingExam.problemUrl" value="'+esc(exam.problemUrl||'')+'" placeholder="例: https://example.com/mondai"></label>'
       + '<label>解説URL（任意。入力すると結果画面に「解説」というリンクが表示されます）<input type="text" data-field="editingExam.explanationUrl" value="'+esc(exam.explanationUrl||'')+'" placeholder="例: https://example.com/kaisetsu"></label>'
       + '<label>デフォルト選択肢数<input type="number" min="2" max="10" data-field="editingExam.defaultChoices" value="'+exam.defaultChoices+'"></label>'
+      + '<div class="pts-box" id="pointsSummary">'+renderPointsSummaryHtml(exam)+'</div>'
       + '<h2>大問</h2>'
       + renderWholeBulkBox(exam)
       + sectionsHtml
@@ -1243,7 +1411,8 @@ const auth = getAuth(fbApp);
       + '<b>AND条件</b>: 対象の問題ごとに許容する解答値を指定し、全問が許容値に入ったときだけ加点します。<br>'
       + '<b>トリガー分岐</b>: トリガー問題の解答値ごとに、判定する対象問題と許容値が切り替わります。トリガーの値に合う分岐がなければ加点なしです。</p>'
       + cgHtml
-      + '<button class="btn btn-secondary" data-action="addCondGroup">＋ 条件付き配点グループを追加</button>';
+      + '<button class="btn btn-secondary" data-action="addCondGroup">＋ 条件付き配点グループを追加</button>'
+      + '<div class="pts-bar" id="ptsBar">'+esc(renderPointsBarText(exam))+'</div>';
   }
 
   function renderCondGroupEditor(cg, ci){
@@ -1287,6 +1456,12 @@ const auth = getAuth(fbApp);
       + '<div class="row"><input data-field="'+base+'.label" value="'+esc(cg.label||'')+'" placeholder="名称（任意。結果画面に表示）">'
       + '<input type="number" style="width:6em" data-field="'+base+'.points" value="'+(cg.points==null?'':cg.points)+'" placeholder="配点">'
       + '<button class="btn-link danger" data-action="removeCondGroup" data-ci="'+ci+'">削除</button></div>'
+      + '<label>配点を計上する大問<select data-field="'+base+'.sectionId" data-rerender="true">'
+      + '<option value="" '+(!cg.sectionId?'selected':'')+'>自動（最初の対象問題がある大問）</option>'
+      + (state.editingExam.sections||[]).map(function(sec, si){
+          return '<option value="'+esc(sec.id)+'" '+(cg.sectionId===sec.id?'selected':'')+'>'+esc((sec.title||'').trim() || ('大問'+(si+1)))+'</option>';
+        }).join('')
+      + '</select></label>'
       + '<label>モード<select data-field="'+base+'.mode" data-rerender="true">'
       + '<option value="and" '+(!isBranch?'selected':'')+'>AND条件（分岐なし）</option>'
       + '<option value="branch" '+(isBranch?'selected':'')+'>トリガー問題による分岐</option>'
@@ -1417,7 +1592,7 @@ const auth = getAuth(fbApp);
     var sub = {
       id: uid('sub'), examId: exam.id, examName: exam.name, examTags: (exam.tags||[]).slice(), studentKey: state.user.key,
       submittedAt: Date.now(), total: result.total, max: result.max,
-      perQuestion: result.perQuestion, sectionAgg: result.sectionAgg, conditionalResults: result.conditionalResults,
+      perQuestion: result.perQuestion, sectionAgg: result.sectionAgg, sectionAggVersion: result.sectionAggVersion, sectionOrder: result.sectionOrder, conditionalResults: result.conditionalResults,
       answers: Object.assign({}, state.currentAnswers),
       elapsedMs: elapsedMs, laps: laps
     };
@@ -1485,7 +1660,7 @@ const auth = getAuth(fbApp);
       if(cgError) return;
       var name = '条件付き配点グループ'+(idx+1);
       var pts = Number(cg.points)||0;
-      var out = { id: cg.id || uid('cg'), label: (cg.label||'').trim(), mode: cg.mode==='branch' ? 'branch' : 'and', points: pts };
+      var out = { id: cg.id || uid('cg'), label: (cg.label||'').trim(), sectionId: cg.sectionId||'', mode: cg.mode==='branch' ? 'branch' : 'and', points: pts };
       if(out.mode==='and'){
         var targets = (cg.andTargets||[]).map(function(t){
           return { no: parseNoList(t.no)[0] || '', allowed: parseValueList(t.allowedText) };
@@ -1730,7 +1905,7 @@ const auth = getAuth(fbApp);
     addCondGroup: function(){
       state.editingExam.conditionalGroups = state.editingExam.conditionalGroups || [];
       state.editingExam.conditionalGroups.push({
-        id:uid('cg'), label:'', mode:'and', points:0, allowDuplicates:false,
+        id:uid('cg'), label:'', sectionId:'', mode:'and', points:0, allowDuplicates:false,
         andTargets:[{no:'', allowedText:''}],
         triggerNo:'', matchMode:'multi', branches:[{whenText:'', targetsText:'', allowedText:''}]
       });
@@ -1832,11 +2007,13 @@ const auth = getAuth(fbApp);
   }
   appEl.addEventListener('input', function(e){
     onFieldChange(e);
+    updatePointsSummary();
     var el = e.target.closest('[data-field]');
     if(el && el.dataset.field==='trendFilterTag') drawTrendChart();
   });
   appEl.addEventListener('change', function(e){
     onFieldChange(e);
+    updatePointsSummary();
     var el = e.target.closest('[data-field][data-rerender="true"]');
     if(el) render();
   });
