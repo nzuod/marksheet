@@ -953,7 +953,7 @@ const auth = getAuth(fbApp);
     currentExamId:null, currentAnswers:null, currentSubmission:null, resultOrigin:'list',
     editingExam:null, adminStatsExamId:null, adminDeleteYear:null,
     examTimer:null, examTimerExamId:null,
-    trendFilterTag:'', trendMetric:'rate',
+    trendFilterTag:'', trendMetric:'rate', examFilterTag:'',
     modal:null, toast:null
   };
 
@@ -1023,15 +1023,29 @@ const auth = getAuth(fbApp);
   }
 
   function renderExamList(){
+    var published = getExams().filter(function(e){ return e.status==='published'; });
+    if(published.length===0) return '<p class="empty">現在受験できる模試はありません。</p>';
+    return ''
+      + '<label>タグで検索<input type="text" data-field="examFilterTag" value="'+esc(state.examFilterTag||'')+'" placeholder="例: 第2回"></label>'
+      + '<div id="examListBody">'+renderExamListBody()+'</div>';
+  }
+  // 検索欄の入力中は、入力欄のフォーカスを保つため、この一覧部分だけを差し替える
+  function renderExamListBody(){
+    var q = (state.examFilterTag||'').trim().toLowerCase();
     var exams = getExams().filter(function(e){ return e.status==='published'; });
-    if(exams.length===0) return '<p class="empty">現在受験できる模試はありません。</p>';
+    if(q){
+      exams = exams.filter(function(e){ return (e.tags||[]).some(function(t){ return t.toLowerCase().indexOf(q)!==-1; }); });
+    }
+    if(exams.length===0) return '<p class="empty">条件に合う模試はありません。</p>';
     var drafts = getDrafts();
+    var mySubs = getSubs().filter(function(s){ return s.studentKey===state.user.key; });
     return '<div class="exam-list">'+exams.map(function(e){
       var hasDraft = !!drafts[state.user.key+'__'+e.id];
+      var count = mySubs.filter(function(s){ return s.examId===e.id; }).length;
       var tagsHtml = (e.tags||[]).map(function(t){ return '<span class="tag-chip">'+esc(t)+'</span>'; }).join('');
       return '<div class="exam-item" data-action="openExam" data-eid="'+e.id+'">'
         + '<div class="exam-item-main"><div class="exam-item-name">'+esc(e.name)+'</div>'
-        + '<div class="exam-item-meta">'+esc(e.subject)+' ・ '+esc(e.year||'')+'</div>'
+        + '<div class="exam-item-meta">'+esc(e.subject)+' ・ '+esc(e.year||'')+' ・ '+(count>0 ? count+'回受験済み' : '未受験')+'</div>'
         + (tagsHtml ? '<div>'+tagsHtml+'</div>' : '')
         + '</div>'
         + (hasDraft ? '<span class="pill pill-warn">途中</span>' : '')
@@ -2010,6 +2024,10 @@ const auth = getAuth(fbApp);
     updatePointsSummary();
     var el = e.target.closest('[data-field]');
     if(el && el.dataset.field==='trendFilterTag') drawTrendChart();
+    if(el && el.dataset.field==='examFilterTag'){
+      var body = document.getElementById('examListBody');
+      if(body && state.user) body.innerHTML = renderExamListBody();
+    }
   });
   appEl.addEventListener('change', function(e){
     onFieldChange(e);
