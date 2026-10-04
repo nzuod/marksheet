@@ -143,6 +143,14 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
 
 .exam-timer-bar{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin:12px 0; padding:10px 14px; background:var(--surface); border-radius:var(--radius-m); }
 .exam-timer-bar .timer-clock{ margin:0; font-size:1.35rem; }
+/* 解答画面：戻るボタンとタイマーをひとまとめにして、スクロールしても画面上部に固定する */
+.answer-head{ position:sticky; top:env(safe-area-inset-top,0px); z-index:6; background:var(--paper); padding-bottom:8px; border-bottom:1px solid var(--line); margin-bottom:10px; }
+.answer-head .topbar{ position:static; margin-bottom:0; border-bottom:none; padding-bottom:8px; }
+.answer-head .exam-timer-bar{ margin:0; }
+.tag-pick{ display:inline-block; font-family:var(--font-body); font-size:0.8rem; padding:6px 12px; margin:3px 6px 3px 0; border-radius:100px; border:1px solid var(--line); background:var(--surface-2); color:var(--ink-soft); cursor:pointer; }
+.tag-pick.on{ background:var(--accent); border-color:var(--accent); color:var(--accent-contrast); font-weight:700; }
+.tag-panel{ margin:2px 0 10px; }
+.filter-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .lap-capture{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 2px; font-size:0.82rem; color:var(--ink-soft); }
 
 .timer-clock{ font-family:var(--font-display); font-size:2.3rem; font-weight:700; text-align:center; letter-spacing:.03em; margin:8px 0 14px; font-variant-numeric:tabular-nums; }
@@ -953,7 +961,7 @@ const auth = getAuth(fbApp);
     currentExamId:null, currentAnswers:null, currentSubmission:null, resultOrigin:'list',
     editingExam:null, adminStatsExamId:null, adminDeleteYear:null,
     examTimer:null, examTimerExamId:null,
-    trendFilterTag:'', trendMetric:'rate', examFilterTag:'',
+    trendFilterTag:'', trendMetric:'rate', examFilterTag:'', examFilterTags:[], examTagPanelOpen:false,
     modal:null, toast:null
   };
 
@@ -1025,17 +1033,45 @@ const auth = getAuth(fbApp);
   function renderExamList(){
     var published = getExams().filter(function(e){ return e.status==='published'; });
     if(published.length===0) return '<p class="empty">現在受験できる模試はありません。</p>';
+    // 公開中の模試に付いているタグを、使用数の多い順に並べて選択肢にする
+    var freq = {}, order = [];
+    published.forEach(function(e){
+      (e.tags||[]).forEach(function(t){
+        if(!Object.prototype.hasOwnProperty.call(freq, t)){ freq[t] = 0; order.push(t); }
+        freq[t]++;
+      });
+    });
+    order.sort(function(a,b){ return freq[b]-freq[a]; });
+    // 模試の非公開化などで存在しなくなったタグが選択されたままにならないよう取り除く
+    var selected = (state.examFilterTags||[]).filter(function(t){ return Object.prototype.hasOwnProperty.call(freq, t); });
+    state.examFilterTags = selected;
+    var open = !!state.examTagPanelOpen;
+    var chips = order.map(function(t){
+      var on = selected.indexOf(t)!==-1;
+      return '<button type="button" class="tag-pick '+(on?'on':'')+'" data-action="toggleExamTag" data-tag="'+esc(t)+'">'+esc(t)+'</button>';
+    }).join('');
     return ''
-      + '<label>タグで検索<input type="text" data-field="examFilterTag" value="'+esc(state.examFilterTag||'')+'" placeholder="例: 第2回"></label>'
+      + '<label>検索<input type="text" data-field="examFilterTag" value="'+esc(state.examFilterTag||'')+'" placeholder="タイトル・タグで検索"></label>'
+      + (order.length ? (''
+        + '<div class="filter-row"><button class="btn-link" data-action="toggleExamTagPanel">タグで絞り込む'+(selected.length?'（'+selected.length+'件選択中）':'')+(open?' ▲':' ▼')+'</button>'
+        + (selected.length ? '<button class="btn-link" data-action="clearExamTags">選択を解除</button>' : '')
+        + '</div>'
+        + (open ? '<div class="tag-panel">'+chips+'</div>' : '')) : '')
       + '<div id="examListBody">'+renderExamListBody()+'</div>';
   }
   // 検索欄の入力中は、入力欄のフォーカスを保つため、この一覧部分だけを差し替える
   function renderExamListBody(){
     var q = (state.examFilterTag||'').trim().toLowerCase();
+    var sel = state.examFilterTags||[];
     var exams = getExams().filter(function(e){ return e.status==='published'; });
-    if(q){
-      exams = exams.filter(function(e){ return (e.tags||[]).some(function(t){ return t.toLowerCase().indexOf(q)!==-1; }); });
-    }
+    // 選択したタグはすべて持っていること（AND）。検索欄の文字は、タイトルまたはタグのどれかに部分一致すればよい。
+    exams = exams.filter(function(e){
+      var tags = e.tags||[];
+      if(sel.some(function(t){ return tags.indexOf(t)===-1; })) return false;
+      if(!q) return true;
+      return String(e.name||'').toLowerCase().indexOf(q)!==-1
+        || tags.some(function(t){ return t.toLowerCase().indexOf(q)!==-1; });
+    });
     if(exams.length===0) return '<p class="empty">条件に合う模試はありません。</p>';
     var drafts = getDrafts();
     var mySubs = getSubs().filter(function(s){ return s.studentKey===state.user.key; });
@@ -1219,9 +1255,11 @@ const auth = getAuth(fbApp);
       return divider+qsHtml+lapCtl;
     }).join('');
     return ''
+      + '<div class="answer-head">'
       + '<div class="topbar"><button class="btn-link" data-action="leaveAnswerScreen">← 一覧に戻る</button><h1>'+esc(exam.name)+'</h1><div></div></div>'
       + '<div class="exam-timer-bar"><span id="examTimerClock" class="timer-clock">'+formatDuration(examTimerElapsedMs())+'</span>'
       + '<button class="btn btn-secondary" data-action="toggleExamTimer">'+(timer.running?'一時停止':'再開')+'</button></div>'
+      + '</div>'
       + '<div class="exam-sub">'+esc(exam.subject)+' ・ '+esc(exam.year||'')+'</div>'
       + (exam.problemUrl ? '<a class="problem-link" href="'+esc(exam.problemUrl)+'" target="_blank" rel="noopener noreferrer">問題</a>' : '')
       + sectionsHtml
@@ -1995,6 +2033,15 @@ const auth = getAuth(fbApp);
         setState({adminDeleteYear:null});
       }});
     },
+    toggleExamTagPanel: function(){ setState({examTagPanelOpen: !state.examTagPanelOpen}); },
+    toggleExamTag: function(el){
+      var tag = el.dataset.tag;
+      var cur = (state.examFilterTags||[]).slice();
+      var i = cur.indexOf(tag);
+      if(i===-1) cur.push(tag); else cur.splice(i,1);
+      setState({examFilterTags: cur});
+    },
+    clearExamTags: function(){ setState({examFilterTags: []}); },
     closeModal: function(){ setState({modal:null}); },
     modalConfirm: function(){
       var m = state.modal;
