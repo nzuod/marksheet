@@ -853,13 +853,52 @@ const auth = getAuth(fbApp);
     if(examTimerInterval){ clearInterval(examTimerInterval); examTimerInterval=null; }
   }
 
-  // ---- 成績推移（過去の結果をタグで絞り込み、提出日時順に並べる） ----
+  // ---- 検索・タグ絞り込み（模試一覧／過去の結果／成績推移で共通） ----
+  // scope は 'exam' | 'past' | 'trend'。画面ごとに検索文字・選択タグ・パネルの開閉を別々に持つ。
+  // 検索欄の文字は「タイトルまたはタグのどれかに部分一致」、選択したタグは「すべて持っていること（AND）」で判定する。
+  function matchesFilter(scope, name, tags){
+    var f = state.filters[scope];
+    var q = (f.text||'').trim().toLowerCase();
+    tags = tags||[];
+    if((f.tags||[]).some(function(t){ return tags.indexOf(t)===-1; })) return false;
+    if(!q) return true;
+    return String(name||'').toLowerCase().indexOf(q)!==-1
+      || tags.some(function(t){ return t.toLowerCase().indexOf(q)!==-1; });
+  }
+  // tagLists: 絞り込み前の各項目のタグ配列を並べた配列。そこに現れるタグを、使用数の多い順に選択肢にする。
+  function renderFilterBar(scope, tagLists){
+    var f = state.filters[scope];
+    var freq = {}, order = [];
+    tagLists.forEach(function(tags){
+      (tags||[]).forEach(function(t){
+        if(!Object.prototype.hasOwnProperty.call(freq, t)){ freq[t] = 0; order.push(t); }
+        freq[t]++;
+      });
+    });
+    order.sort(function(a,b){ return freq[b]-freq[a]; });
+    // 模試の非公開化や結果の削除などで存在しなくなったタグが、選択されたままにならないよう取り除く
+    var selected = (f.tags||[]).filter(function(t){ return Object.prototype.hasOwnProperty.call(freq, t); });
+    f.tags = selected;
+    var open = !!f.open;
+    var chips = order.map(function(t){
+      var on = selected.indexOf(t)!==-1;
+      return '<button type="button" class="tag-pick '+(on?'on':'')+'" data-action="toggleFilterTag" data-scope="'+scope+'" data-tag="'+esc(t)+'">'+esc(t)+'</button>';
+    }).join('');
+    return ''
+      + '<label>検索<input type="text" data-field="filters.'+scope+'.text" data-scope="'+scope+'" data-filter-input="true" value="'+esc(f.text||'')+'" placeholder="タイトル・タグで検索"></label>'
+      + (order.length ? (''
+        + '<div class="filter-row"><button class="btn-link" data-action="toggleFilterPanel" data-scope="'+scope+'">タグで絞り込む'+(selected.length?'（'+selected.length+'件選択中）':'')+(open?' ▲':' ▼')+'</button>'
+        + (selected.length ? '<button class="btn-link" data-action="clearFilterTags" data-scope="'+scope+'">選択を解除</button>' : '')
+        + '</div>'
+        + (open ? '<div class="tag-panel">'+chips+'</div>' : '')) : '');
+  }
+  function myAllSubs(){
+    return getSubs().filter(function(s){ return state.user && s.studentKey===state.user.key; });
+  }
+
+  // ---- 成績推移（過去の結果をタイトル・タグで絞り込み、提出日時順に並べる） ----
   function trendFilteredSortedSubs(){
-    var q = (state.trendFilterTag||'').trim().toLowerCase();
-    var list = getSubs().filter(function(s){ return state.user && s.studentKey===state.user.key; });
-    if(q){
-      list = list.filter(function(s){ return (s.examTags||[]).some(function(t){ return t.toLowerCase().indexOf(q)!==-1; }); });
-    }
+    var list = myAllSubs().filter(function(s){ return matchesFilter('trend', s.examName, s.examTags); });
     return list.slice().sort(function(a,b){ return (a.submittedAt||0)-(b.submittedAt||0); });
   }
 
@@ -961,7 +1000,13 @@ const auth = getAuth(fbApp);
     currentExamId:null, currentAnswers:null, currentSubmission:null, resultOrigin:'list',
     editingExam:null, adminStatsExamId:null, adminDeleteYear:null,
     examTimer:null, examTimerExamId:null,
-    trendFilterTag:'', trendMetric:'rate', examFilterTag:'', examFilterTags:[], examTagPanelOpen:false,
+    trendMetric:'rate',
+    // 検索・タグ絞り込みの状態。模試一覧／過去の結果／成績推移でそれぞれ別々に持つ
+    filters:{
+      exam:{ text:'', tags:[], open:false },
+      past:{ text:'', tags:[], open:false },
+      trend:{ text:'', tags:[], open:false }
+    },
     modal:null, toast:null
   };
 
@@ -1033,45 +1078,12 @@ const auth = getAuth(fbApp);
   function renderExamList(){
     var published = getExams().filter(function(e){ return e.status==='published'; });
     if(published.length===0) return '<p class="empty">現在受験できる模試はありません。</p>';
-    // 公開中の模試に付いているタグを、使用数の多い順に並べて選択肢にする
-    var freq = {}, order = [];
-    published.forEach(function(e){
-      (e.tags||[]).forEach(function(t){
-        if(!Object.prototype.hasOwnProperty.call(freq, t)){ freq[t] = 0; order.push(t); }
-        freq[t]++;
-      });
-    });
-    order.sort(function(a,b){ return freq[b]-freq[a]; });
-    // 模試の非公開化などで存在しなくなったタグが選択されたままにならないよう取り除く
-    var selected = (state.examFilterTags||[]).filter(function(t){ return Object.prototype.hasOwnProperty.call(freq, t); });
-    state.examFilterTags = selected;
-    var open = !!state.examTagPanelOpen;
-    var chips = order.map(function(t){
-      var on = selected.indexOf(t)!==-1;
-      return '<button type="button" class="tag-pick '+(on?'on':'')+'" data-action="toggleExamTag" data-tag="'+esc(t)+'">'+esc(t)+'</button>';
-    }).join('');
-    return ''
-      + '<label>検索<input type="text" data-field="examFilterTag" value="'+esc(state.examFilterTag||'')+'" placeholder="タイトル・タグで検索"></label>'
-      + (order.length ? (''
-        + '<div class="filter-row"><button class="btn-link" data-action="toggleExamTagPanel">タグで絞り込む'+(selected.length?'（'+selected.length+'件選択中）':'')+(open?' ▲':' ▼')+'</button>'
-        + (selected.length ? '<button class="btn-link" data-action="clearExamTags">選択を解除</button>' : '')
-        + '</div>'
-        + (open ? '<div class="tag-panel">'+chips+'</div>' : '')) : '')
+    return renderFilterBar('exam', published.map(function(e){ return e.tags; }))
       + '<div id="examListBody">'+renderExamListBody()+'</div>';
   }
   // 検索欄の入力中は、入力欄のフォーカスを保つため、この一覧部分だけを差し替える
   function renderExamListBody(){
-    var q = (state.examFilterTag||'').trim().toLowerCase();
-    var sel = state.examFilterTags||[];
-    var exams = getExams().filter(function(e){ return e.status==='published'; });
-    // 選択したタグはすべて持っていること（AND）。検索欄の文字は、タイトルまたはタグのどれかに部分一致すればよい。
-    exams = exams.filter(function(e){
-      var tags = e.tags||[];
-      if(sel.some(function(t){ return tags.indexOf(t)===-1; })) return false;
-      if(!q) return true;
-      return String(e.name||'').toLowerCase().indexOf(q)!==-1
-        || tags.some(function(t){ return t.toLowerCase().indexOf(q)!==-1; });
-    });
+    var exams = getExams().filter(function(e){ return e.status==='published' && matchesFilter('exam', e.name, e.tags); });
     if(exams.length===0) return '<p class="empty">条件に合う模試はありません。</p>';
     var drafts = getDrafts();
     var mySubs = getSubs().filter(function(s){ return s.studentKey===state.user.key; });
@@ -1090,8 +1102,17 @@ const auth = getAuth(fbApp);
   }
 
   function renderPastResults(){
-    var subs = getSubs().filter(function(s){ return s.studentKey===state.user.key; }).sort(function(a,b){ return b.submittedAt-a.submittedAt; });
-    if(subs.length===0) return '<p class="empty">まだ提出した結果はありません。</p>';
+    var all = myAllSubs();
+    if(all.length===0) return '<p class="empty">まだ提出した結果はありません。</p>';
+    return renderFilterBar('past', all.map(function(s){ return s.examTags; }))
+      + '<div id="pastListBody">'+renderPastListBody()+'</div>';
+  }
+  // 検索欄の入力中は、入力欄のフォーカスを保つため、この一覧部分だけを差し替える
+  function renderPastListBody(){
+    var subs = myAllSubs()
+      .filter(function(s){ return matchesFilter('past', s.examName, s.examTags); })
+      .sort(function(a,b){ return b.submittedAt-a.submittedAt; });
+    if(subs.length===0) return '<p class="empty">条件に合う結果はありません。</p>';
     return '<div class="past-list">'+subs.map(function(s){
       var tagsHtml = (s.examTags||[]).map(function(t){ return '<span class="tag-chip">'+esc(t)+'</span>'; }).join('');
       return '<div class="past-item">'
@@ -1108,8 +1129,8 @@ const auth = getAuth(fbApp);
   // ---- render: 成績推移（過去の結果をタグで絞り込み、得点率・所要時間・大問別得点率を表示） ----
   function renderTrendTab(){
     return ''
-      + '<p class="hint">タグで検索し、得点率・所要時間・大問別得点率の推移を表示します。</p>'
-      + '<label>タグで検索<input type="text" data-field="trendFilterTag" value="'+esc(state.trendFilterTag||'')+'" placeholder="例: 第2回"></label>'
+      + '<p class="hint">タイトル・タグで絞り込み、得点率・所要時間・大問別得点率の推移を表示します。</p>'
+      + renderFilterBar('trend', myAllSubs().map(function(s){ return s.examTags; }))
       + '<label>表示するデータ<select data-field="trendMetric" data-rerender="true">'
       + '<option value="rate" '+(state.trendMetric==='rate'?'selected':'')+'>得点率</option>'
       + '<option value="time" '+(state.trendMetric==='time'?'selected':'')+'>所要時間</option>'
@@ -2033,15 +2054,28 @@ const auth = getAuth(fbApp);
         setState({adminDeleteYear:null});
       }});
     },
-    toggleExamTagPanel: function(){ setState({examTagPanelOpen: !state.examTagPanelOpen}); },
-    toggleExamTag: function(el){
+    toggleFilterPanel: function(el){
+      var f = state.filters[el.dataset.scope];
+      if(!f) return;
+      f.open = !f.open;
+      render();
+    },
+    toggleFilterTag: function(el){
+      var f = state.filters[el.dataset.scope];
+      if(!f) return;
       var tag = el.dataset.tag;
-      var cur = (state.examFilterTags||[]).slice();
+      var cur = (f.tags||[]).slice();
       var i = cur.indexOf(tag);
       if(i===-1) cur.push(tag); else cur.splice(i,1);
-      setState({examFilterTags: cur});
+      f.tags = cur;
+      render();
     },
-    clearExamTags: function(){ setState({examFilterTags: []}); },
+    clearFilterTags: function(el){
+      var f = state.filters[el.dataset.scope];
+      if(!f) return;
+      f.tags = [];
+      render();
+    },
     closeModal: function(){ setState({modal:null}); },
     modalConfirm: function(){
       var m = state.modal;
@@ -2070,10 +2104,14 @@ const auth = getAuth(fbApp);
     onFieldChange(e);
     updatePointsSummary();
     var el = e.target.closest('[data-field]');
-    if(el && el.dataset.field==='trendFilterTag') drawTrendChart();
-    if(el && el.dataset.field==='examFilterTag'){
-      var body = document.getElementById('examListBody');
-      if(body && state.user) body.innerHTML = renderExamListBody();
+    // 検索欄の入力中は、フォーカスを保つため、一覧やグラフの部分だけを更新する
+    if(el && el.dataset.filterInput && state.user){
+      var scope = el.dataset.scope;
+      if(scope==='trend'){ drawTrendChart(); }
+      else {
+        var body = document.getElementById(scope==='past' ? 'pastListBody' : 'examListBody');
+        if(body) body.innerHTML = scope==='past' ? renderPastListBody() : renderExamListBody();
+      }
     }
   });
   appEl.addEventListener('change', function(e){
