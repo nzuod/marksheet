@@ -828,7 +828,7 @@ const auth = getAuth(fbApp);
   }
 
   function makeBlankExam(){
-    return { id:uid('exam'), name:'', subject:'', problemUrl:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:4, sections:[], groups:[], conditionalGroups:[], tags:[] };
+    return { id:uid('exam'), name:'', subject:'', problemUrl:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:10, sections:[], groups:[], conditionalGroups:[], tags:[] };
   }
 
   // ---- 解答タイマー（模試を開くと自動スタートし、大問ごとにラップを記録する） ----
@@ -1688,7 +1688,7 @@ const auth = getAuth(fbApp);
       explanationUrl: (src.explanationUrl||'').trim(),
       year: src.year,
       status: src.status||'draft',
-      defaultChoices: Number(src.defaultChoices)||4,
+      defaultChoices: Number(src.defaultChoices)||10,
       sections: (src.sections||[]).map(function(sec){
         return {
           id: sec.id,
