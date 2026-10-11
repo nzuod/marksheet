@@ -187,6 +187,10 @@ label.check input{ width:auto; margin:0; }
 .pts-table tr.total td{ font-weight:700; border-bottom:none; }
 .pts-warn{ color:var(--warn); background:var(--warn-soft); border-radius:var(--radius-s); padding:8px 10px; margin:8px 0 0; font-size:0.8rem; line-height:1.55; }
 .pts-ok{ color:var(--green); background:var(--green-soft); border-radius:var(--radius-s); padding:8px 10px; margin:8px 0 0; font-size:0.8rem; line-height:1.55; }
+.pts-bad{ color:var(--red); background:var(--red-soft); border-radius:var(--radius-s); padding:8px 10px; margin:8px 0 0; font-size:0.8rem; line-height:1.55; }
+.tab-dot{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-left:4px; vertical-align:middle; }
+.tab-dot.warn{ background:var(--warn); }
+.tab-dot.danger{ background:var(--red); }
 .pts-bar{ position:sticky; bottom:calc(10px + env(safe-area-inset-bottom,0px)); z-index:20; margin-top:18px; background:var(--accent); color:var(--accent-contrast); border-radius:100px; padding:9px 16px; font-size:0.85rem; font-weight:700; text-align:center; box-shadow:0 2px 10px rgba(0,0,0,.25); }
 .cg-result{ padding:10px 2px; border-bottom:1px solid var(--line); font-size:0.88rem; }
 .cg-result .cg-head{ display:flex; align-items:center; gap:12px; }
@@ -1047,6 +1051,7 @@ const auth = getAuth(fbApp);
     studentTab:'list', adminTab:'exams',
     currentExamId:null, currentAnswers:null, currentSubmission:null, resultOrigin:'list',
     editingExam:null, adminStatsExamId:null, adminDeleteYear:null,
+    usageDau:'', usageOpens:3, usageAdminOpens:5,
     examTimer:null, examTimerExamId:null,
     trendMetric:'rate',
     // 検索・タグ絞り込みの状態。模試一覧／過去の結果／成績推移でそれぞれ別々に持つ
@@ -1407,18 +1412,79 @@ const auth = getAuth(fbApp);
       + '<button class="btn btn-secondary btn-block" style="margin-top:20px" data-action="backFromResult">← 戻る</button>';
   }
 
+  // ---- Firebase無料枠（読み取り5万/日）の使用量の目安 ----
+  // アプリを開くたびに全データを読み直す作りなので、「開く回数 × 読むドキュメント数」で概算する。
+  var USAGE_LIMIT_READS = 50000;
+  var USAGE_WARN_RATIO = 0.6, USAGE_DANGER_RATIO = 0.9;
+  var USAGE_DRAFTS_PER_STUDENT = 3; // 1人あたりの途中保存の数（想定）
+  function usageNumOr(v, def){ return (v==='' || v==null || isNaN(Number(v))) ? def : Math.max(0, Number(v)); }
+  function usageFmt(n){ return Math.round(n).toLocaleString('ja-JP'); }
+  function usageEstimate(){
+    var exams = getExams(), subs = getSubs();
+    var E = exams.length;
+    var P = exams.filter(function(e){ return e.status==='published'; }).length;
+    var T = subs.length;
+    var students = {}, recent = {}, since = Date.now() - 7*24*60*60*1000;
+    subs.forEach(function(x){
+      students[x.studentKey] = true;
+      if(x.submittedAt >= since) recent[x.studentKey] = true;
+    });
+    var N = Object.keys(students).length;
+    var autoDau = Object.keys(recent).length;
+    var dau = usageNumOr(state.usageDau, autoDau);
+    var opens = usageNumOr(state.usageOpens, 3);
+    var adminOpens = usageNumOr(state.usageAdminOpens, 5);
+    var avgSubs = N>0 ? T/N : 0;
+    var studentReads = dau * opens * (P + avgSubs + USAGE_DRAFTS_PER_STUDENT);
+    var adminReads = adminOpens * (E + T);
+    var total = studentReads + adminReads;
+    var ratio = total / USAGE_LIMIT_READS;
+    var level = ratio<USAGE_WARN_RATIO ? 'ok' : ratio<USAGE_DANGER_RATIO ? 'warn' : 'danger';
+    return { E:E, P:P, T:T, N:N, autoDau:autoDau, studentReads:studentReads, adminReads:adminReads, total:total, ratio:ratio, level:level };
+  }
+  function renderAdminUsage(){
+    var u = usageEstimate();
+    var pct = Math.round(u.ratio*100);
+    var msg = u.level==='ok' ? '安心：1日の読み取りは無料枠の約'+pct+'％と推定されます'
+      : u.level==='warn' ? '注意：1日の読み取りは無料枠の約'+pct+'％と推定されます。古い学年度のデータを下の「一括削除」で消すと下がります'
+      : '危険：1日の読み取りが無料枠を超える可能性が高いです（推定'+pct+'％）。古い学年度のデータを下の「一括削除」で消してください';
+    var cls = u.level==='ok' ? 'pts-ok' : u.level==='warn' ? 'pts-warn' : 'pts-bad';
+    function val(x){ return (x==='' || x==null) ? '' : esc(String(x)); }
+    return ''
+      + '<h2>Firebase使用量の目安</h2>'
+      + '<div class="'+cls+'">'+msg+'</div>'
+      + '<div class="stat-table" style="margin-top:10px">'
+      +   '<div class="stat-row"><span class="stat-label">登録済みの模試</span><span>'+u.E+'件（公開中 '+u.P+'件）</span></div>'
+      +   '<div class="stat-row"><span class="stat-label">提出の累計</span><span>'+usageFmt(u.T)+'件（'+u.N+'人分）</span></div>'
+      +   '<div class="stat-row"><span class="stat-label">推定の読み取り／日</span><span>'+usageFmt(u.total)+' ／ '+usageFmt(USAGE_LIMIT_READS)+'</span></div>'
+      +   '<div class="stat-row"><span class="stat-label">　うち生徒がアプリを開く分</span><span>'+usageFmt(u.studentReads)+'</span></div>'
+      +   '<div class="stat-row"><span class="stat-label">　うち管理画面を開く分</span><span>'+usageFmt(u.adminReads)+'</span></div>'
+      + '</div>'
+      + '<label>1日に使う生徒の数（想定）<input type="number" min="0" data-field="usageDau" data-rerender="true" placeholder="空欄＝自動（直近7日に提出した'+u.autoDau+'人）" value="'+val(state.usageDau)+'"></label>'
+      + '<label>生徒1人が1日にアプリを開く回数（想定）<input type="number" min="0" data-field="usageOpens" data-rerender="true" value="'+val(state.usageOpens)+'"></label>'
+      + '<label>管理画面を1日に開く回数（想定）<input type="number" min="0" data-field="usageAdminOpens" data-rerender="true" value="'+val(state.usageAdminOpens)+'"></label>'
+      + '<p class="hint">推定 ＝ 利用生徒数 × 開く回数 ×（公開模試数 ＋ 1人あたりの提出数 ＋ 途中保存'+USAGE_DRAFTS_PER_STUDENT+'）＋ 管理画面を開く回数 ×（全模試数 ＋ 提出の累計）。アプリを開くたびに全データを読み直すため、提出の累計が増えると管理画面を開くだけで大きく増えます。</p>'
+      + '<p class="hint">「自動」は直近7日に提出した生徒の数なので、開くだけの生徒は含まれません。実際の利用が多そうなら数字を入れてください。</p>'
+      + '<p class="hint">無料枠は1日あたり読み取り5万・書き込み2万・削除2万。超えるとその日は読み込みが止まり、日本時間の夕方ごろ（16〜17時）のリセットで戻ります。書き込みは1提出につき1件なので、通常は問題になりません。</p>';
+  }
+  function renderAdminData(){
+    return renderAdminUsage() + '<div class="section-divider"></div>' + renderAdminDelete();
+  }
+
   // ---- render: admin ----
   function renderAdminHome(){
     var tab = state.adminTab||'exams';
+    var usageLevel = usageEstimate().level;
+    var usageDot = usageLevel==='ok' ? '' : '<span class="tab-dot '+usageLevel+'"></span>';
     return ''
       + '<div class="topbar"><div class="user-badge">管理者</div><h1>管理画面</h1><button class="btn-link" data-action="logout">ログアウト</button></div>'
       + '<div class="tabs">'
       + '<button class="tab '+(tab==='exams'?'active':'')+'" data-action="setAdminTab" data-tab="exams">模試管理</button>'
       + '<button class="tab '+(tab==='stats'?'active':'')+'" data-action="setAdminTab" data-tab="stats">統計</button>'
-      + '<button class="tab '+(tab==='delete'?'active':'')+'" data-action="setAdminTab" data-tab="delete">データ削除</button>'
+      + '<button class="tab '+(tab==='delete'?'active':'')+'" data-action="setAdminTab" data-tab="delete">データ管理'+usageDot+'</button>'
       + '<button class="tab '+(tab==='ai'?'active':'')+'" data-action="setAdminTab" data-tab="ai">AI機能</button>'
       + '</div>'
-      + (tab==='exams' ? renderAdminExamList() : tab==='stats' ? renderAdminStats() : tab==='delete' ? renderAdminDelete() : renderAdminAI());
+      + (tab==='exams' ? renderAdminExamList() : tab==='stats' ? renderAdminStats() : tab==='delete' ? renderAdminData() : renderAdminAI());
   }
 
   function renderAdminExamList(){
@@ -1512,7 +1578,7 @@ const auth = getAuth(fbApp);
       + '<label>教科<input data-field="editingExam.subject" value="'+esc(exam.subject)+'" placeholder="例: 国語"></label>'
       + '<label>タグ（成績推移で絞り込みに使います）<input type="text" data-field="editingExam.tagsText" value="'+esc(exam.tagsText||'')+'" placeholder="例: 第2回, 国語, リスニング"></label>'
       + '<p class="hint">タグはカンマまたは読点で区切ります。生徒が提出した結果にもこのタグが引き継がれます。</p>'
-      + '<p class="hint">学年度: '+esc(gakunendoLabel(exam.year))+'（作成日から自動判定・変更不可。管理画面の「データ削除」タブで学年度ごとまとめて削除できます）</p>'
+      + '<p class="hint">学年度: '+esc(gakunendoLabel(exam.year))+'（作成日から自動判定・変更不可。管理画面の「データ管理」タブで学年度ごとまとめて削除できます）</p>'
       + '<label>問題URL（任意。入力すると解答画面に「問題」というリンクが表示されます）<input type="text" data-field="editingExam.problemUrl" value="'+esc(exam.problemUrl||'')+'" placeholder="例: https://example.com/mondai"></label>'
       + '<label>解説URL（任意。入力すると結果画面に「解説」というリンクが表示されます）<input type="text" data-field="editingExam.explanationUrl" value="'+esc(exam.explanationUrl||'')+'" placeholder="例: https://example.com/kaisetsu"></label>'
       + '<label>デフォルト選択肢数<input type="number" min="2" max="10" data-field="editingExam.defaultChoices" value="'+exam.defaultChoices+'"></label>'
