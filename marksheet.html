@@ -331,6 +331,22 @@ const auth = getAuth(fbApp);
   var draftsCache = {}; // key: studentKey+'__'+examId -> answers
   var unsubscribers = [];
 
+  // 変更のあったドキュメントだけをFirestoreに書き込むため、「最後にFirestoreと一致していた内容」をIDごとに文字列で控えておく。
+  // Firestoreはマップのキー順を保持しないので、キーを並べ替えた文字列で比べる。
+  var synced = { exams:{}, subs:{}, drafts:{} };
+  function stableJson(v){
+    return JSON.stringify(v, function(k, val){
+      if(val && typeof val==='object' && !Array.isArray(val)){
+        var o = {};
+        Object.keys(val).sort().forEach(function(kk){ o[kk] = val[kk]; });
+        return o;
+      }
+      return val;
+    });
+  }
+  function rememberExams(){ synced.exams = {}; examsCache.forEach(function(e){ synced.exams[e.id] = stableJson(examToStore(e)); }); }
+  function rememberSubs(){ synced.subs = {}; subsCache.forEach(function(x){ synced.subs[x.id] = stableJson(x); }); }
+
   // Firestoreは「配列の中の配列」を保存できない。完全解答の組み合わせ(combos)は
   // 画面内では [[1,4],[4,1]] の二重配列で扱うため、保存時は ["1,4","4,1"] の文字列配列に変換し、読み込み時に戻す。
   function examToStore(e){
@@ -353,6 +369,7 @@ const auth = getAuth(fbApp);
   function stopAllSubscriptions(){
     unsubscribers.forEach(function(fn){ try{ fn(); }catch(e){} });
     unsubscribers = [];
+    synced = { exams:{}, subs:{}, drafts:{} };
   }
 
   // 管理者: 模試は全件、提出結果は全件購読する（統計画面のため）。下書きは生徒のプライバシーに配慮し購読しない。
@@ -360,10 +377,12 @@ const auth = getAuth(fbApp);
     stopAllSubscriptions();
     unsubscribers.push(onSnapshot(collection(db,'exams'), function(snap){
       examsCache = snap.docs.map(function(d){ return examFromStore(d.data()); });
+      rememberExams();
       render();
     }, function(err){ console.error(err); showToast('模試データの取得に失敗しました'); }));
     unsubscribers.push(onSnapshot(collection(db,'submissions'), function(snap){
       subsCache = snap.docs.map(function(d){ return d.data(); });
+      rememberSubs();
       render();
     }, function(err){ console.error(err); showToast('提出データの取得に失敗しました'); }));
   }
@@ -373,16 +392,20 @@ const auth = getAuth(fbApp);
     stopAllSubscriptions();
     unsubscribers.push(onSnapshot(query(collection(db,'exams'), where('status','==','published')), function(snap){
       examsCache = snap.docs.map(function(d){ return examFromStore(d.data()); });
+      rememberExams();
       render();
     }, function(err){ console.error(err); showToast('模試データの取得に失敗しました'); }));
     unsubscribers.push(onSnapshot(query(collection(db,'submissions'), where('studentKey','==',key)), function(snap){
       subsCache = snap.docs.map(function(d){ return d.data(); });
+      rememberSubs();
       render();
     }, function(err){ console.error(err); showToast('提出データの取得に失敗しました'); }));
     unsubscribers.push(onSnapshot(query(collection(db,'drafts'), where('studentKey','==',key)), function(snap){
       var next = {};
       snap.docs.forEach(function(d){ var v=d.data(); next[v.studentKey+'__'+v.examId] = v.answers; });
       draftsCache = next;
+      synced.drafts = {};
+      Object.keys(next).forEach(function(k){ synced.drafts[k] = stableJson(next[k]); });
       render();
     }, function(err){ console.error(err); showToast('途中保存データの取得に失敗しました'); }));
   }
@@ -392,40 +415,57 @@ const auth = getAuth(fbApp);
     var prevIds = examsCache.map(function(e){ return e.id; });
     var nextIds = list.map(function(e){ return e.id; });
     examsCache = list; // 楽観的にローカルへ反映（少し遅れてonSnapshotが確定値で上書きする）
+    // 内容が変わった模試だけを書き込む（全件を毎回書き直すと、その数だけ書き込み回数が増えるため）
     list.forEach(function(e){
       var p;
-      try{ p = setDoc(doc(db,'exams',e.id), examToStore(e)); }
+      try{
+        var data = examToStore(e);
+        var str = stableJson(data);
+        if(synced.exams[e.id]===str) return;
+        synced.exams[e.id] = str;
+        p = setDoc(doc(db,'exams',e.id), data);
+      }
       catch(err){ p = Promise.reject(err); }
-      p.catch(function(err){ console.error(err); showToast('模試の保存に失敗しました'); });
+      p.catch(function(err){ delete synced.exams[e.id]; console.error(err); showToast('模試の保存に失敗しました'); });
     });
     prevIds.filter(function(id){ return nextIds.indexOf(id)===-1; }).forEach(function(id){
+      delete synced.exams[id];
       deleteDoc(doc(db,'exams',id)).catch(function(err){ console.error(err); });
     });
   }
   function getSubs(){ return subsCache; }
   function saveSubs(list){
-    var prevIds = subsCache.map(function(s){ return s.id; });
-    var nextIds = list.map(function(s){ return s.id; });
+    var prevIds = subsCache.map(function(x){ return x.id; });
+    var nextIds = list.map(function(x){ return x.id; });
     subsCache = list;
-    list.forEach(function(s){
-      setDoc(doc(db,'submissions',s.id), s).catch(function(err){ console.error(err); showToast('提出結果の保存に失敗しました'); });
+    list.forEach(function(x){
+      var str = stableJson(x);
+      if(synced.subs[x.id]===str) return;
+      synced.subs[x.id] = str;
+      setDoc(doc(db,'submissions',x.id), x).catch(function(err){ delete synced.subs[x.id]; console.error(err); showToast('提出結果の保存に失敗しました'); });
     });
     prevIds.filter(function(id){ return nextIds.indexOf(id)===-1; }).forEach(function(id){
+      delete synced.subs[id];
       deleteDoc(doc(db,'submissions',id)).catch(function(err){ console.error(err); });
     });
   }
   function getDrafts(){ return draftsCache; }
   function saveDrafts(obj){
-    var prevKeys = Object.keys(draftsCache);
     var nextKeys = Object.keys(obj);
     draftsCache = obj;
     nextKeys.forEach(function(k){
+      var str = stableJson(obj[k]);
+      if(synced.drafts[k]===str) return;
+      synced.drafts[k] = str;
       var idx = k.indexOf('__');
       var studentKey = k.slice(0,idx), examId = k.slice(idx+2);
       setDoc(doc(db,'drafts',k), {studentKey:studentKey, examId:examId, answers:obj[k], updatedAt:Date.now()})
-        .catch(function(err){ console.error(err); });
+        .catch(function(err){ delete synced.drafts[k]; console.error(err); });
     });
-    prevKeys.filter(function(k){ return nextKeys.indexOf(k)===-1; }).forEach(function(k){
+    // 削除の判定は「Firestoreにある控え」と比べる。
+    // （getDrafts()は手元のキャッシュそのものを返すので、呼び出し側で delete した後だと、キャッシュ同士の比較では消えたことに気づけない）
+    Object.keys(synced.drafts).filter(function(k){ return nextKeys.indexOf(k)===-1; }).forEach(function(k){
+      delete synced.drafts[k];
       deleteDoc(doc(db,'drafts',k)).catch(function(err){ console.error(err); });
     });
   }
