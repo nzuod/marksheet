@@ -186,11 +186,6 @@ label.check input{ width:auto; margin:0; }
 .pts-table th{ color:var(--ink-soft); font-weight:500; }
 .pts-table tr.total td{ font-weight:700; border-bottom:none; }
 .pts-warn{ color:var(--warn); background:var(--warn-soft); border-radius:var(--radius-s); padding:8px 10px; margin:8px 0 0; font-size:0.8rem; line-height:1.55; }
-.pts-ok{ color:var(--green); background:var(--green-soft); border-radius:var(--radius-s); padding:8px 10px; margin:8px 0 0; font-size:0.8rem; line-height:1.55; }
-.pts-bad{ color:var(--red); background:var(--red-soft); border-radius:var(--radius-s); padding:8px 10px; margin:8px 0 0; font-size:0.8rem; line-height:1.55; }
-.tab-dot{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-left:4px; vertical-align:middle; }
-.tab-dot.warn{ background:var(--warn); }
-.tab-dot.danger{ background:var(--red); }
 .pts-bar{ position:sticky; bottom:calc(10px + env(safe-area-inset-bottom,0px)); z-index:20; margin-top:18px; background:var(--accent); color:var(--accent-contrast); border-radius:100px; padding:9px 16px; font-size:0.85rem; font-weight:700; text-align:center; box-shadow:0 2px 10px rgba(0,0,0,.25); }
 .cg-result{ padding:10px 2px; border-bottom:1px solid var(--line); font-size:0.88rem; }
 .cg-result .cg-head{ display:flex; align-items:center; gap:12px; }
@@ -201,10 +196,6 @@ label.check input{ width:auto; margin:0; }
 .q-table{ border-collapse:collapse; width:100%; min-width:520px; }
 .q-table th, .q-table td{ padding:6px; border-bottom:1px solid var(--line); font-size:0.82rem; text-align:left; }
 .q-table input, .q-table select{ margin-top:0; padding:6px 8px; font-size:0.85rem; }
-
-.ai-joke{ text-align:center; padding:60px 0; color:var(--ink-soft); }
-.ai-emoji{ font-size:2.4rem; margin-bottom:10px; }
-.ai-coming{ font-family:var(--font-display); letter-spacing:1px; margin-top:6px; }
 
 .modal-backdrop{ position:fixed; inset:0; background:rgba(20,20,20,0.45); display:flex; align-items:center; justify-content:center; padding:20px; z-index:50; }
 .modal{ background:var(--surface-2); border-radius:var(--radius-m); padding:22px; max-width:360px; width:100%; }
@@ -335,22 +326,6 @@ const auth = getAuth(fbApp);
   var draftsCache = {}; // key: studentKey+'__'+examId -> answers
   var unsubscribers = [];
 
-  // 変更のあったドキュメントだけをFirestoreに書き込むため、「最後にFirestoreと一致していた内容」をIDごとに文字列で控えておく。
-  // Firestoreはマップのキー順を保持しないので、キーを並べ替えた文字列で比べる。
-  var synced = { exams:{}, subs:{}, drafts:{} };
-  function stableJson(v){
-    return JSON.stringify(v, function(k, val){
-      if(val && typeof val==='object' && !Array.isArray(val)){
-        var o = {};
-        Object.keys(val).sort().forEach(function(kk){ o[kk] = val[kk]; });
-        return o;
-      }
-      return val;
-    });
-  }
-  function rememberExams(){ synced.exams = {}; examsCache.forEach(function(e){ synced.exams[e.id] = stableJson(examToStore(e)); }); }
-  function rememberSubs(){ synced.subs = {}; subsCache.forEach(function(x){ synced.subs[x.id] = stableJson(x); }); }
-
   // Firestoreは「配列の中の配列」を保存できない。完全解答の組み合わせ(combos)は
   // 画面内では [[1,4],[4,1]] の二重配列で扱うため、保存時は ["1,4","4,1"] の文字列配列に変換し、読み込み時に戻す。
   function examToStore(e){
@@ -373,7 +348,6 @@ const auth = getAuth(fbApp);
   function stopAllSubscriptions(){
     unsubscribers.forEach(function(fn){ try{ fn(); }catch(e){} });
     unsubscribers = [];
-    synced = { exams:{}, subs:{}, drafts:{} };
   }
 
   // 管理者: 模試は全件、提出結果は全件購読する（統計画面のため）。下書きは生徒のプライバシーに配慮し購読しない。
@@ -381,12 +355,10 @@ const auth = getAuth(fbApp);
     stopAllSubscriptions();
     unsubscribers.push(onSnapshot(collection(db,'exams'), function(snap){
       examsCache = snap.docs.map(function(d){ return examFromStore(d.data()); });
-      rememberExams();
       render();
     }, function(err){ console.error(err); showToast('模試データの取得に失敗しました'); }));
     unsubscribers.push(onSnapshot(collection(db,'submissions'), function(snap){
       subsCache = snap.docs.map(function(d){ return d.data(); });
-      rememberSubs();
       render();
     }, function(err){ console.error(err); showToast('提出データの取得に失敗しました'); }));
   }
@@ -396,20 +368,16 @@ const auth = getAuth(fbApp);
     stopAllSubscriptions();
     unsubscribers.push(onSnapshot(query(collection(db,'exams'), where('status','==','published')), function(snap){
       examsCache = snap.docs.map(function(d){ return examFromStore(d.data()); });
-      rememberExams();
       render();
     }, function(err){ console.error(err); showToast('模試データの取得に失敗しました'); }));
     unsubscribers.push(onSnapshot(query(collection(db,'submissions'), where('studentKey','==',key)), function(snap){
       subsCache = snap.docs.map(function(d){ return d.data(); });
-      rememberSubs();
       render();
     }, function(err){ console.error(err); showToast('提出データの取得に失敗しました'); }));
     unsubscribers.push(onSnapshot(query(collection(db,'drafts'), where('studentKey','==',key)), function(snap){
       var next = {};
       snap.docs.forEach(function(d){ var v=d.data(); next[v.studentKey+'__'+v.examId] = v.answers; });
       draftsCache = next;
-      synced.drafts = {};
-      Object.keys(next).forEach(function(k){ synced.drafts[k] = stableJson(next[k]); });
       render();
     }, function(err){ console.error(err); showToast('途中保存データの取得に失敗しました'); }));
   }
@@ -419,57 +387,40 @@ const auth = getAuth(fbApp);
     var prevIds = examsCache.map(function(e){ return e.id; });
     var nextIds = list.map(function(e){ return e.id; });
     examsCache = list; // 楽観的にローカルへ反映（少し遅れてonSnapshotが確定値で上書きする）
-    // 内容が変わった模試だけを書き込む（全件を毎回書き直すと、その数だけ書き込み回数が増えるため）
     list.forEach(function(e){
       var p;
-      try{
-        var data = examToStore(e);
-        var str = stableJson(data);
-        if(synced.exams[e.id]===str) return;
-        synced.exams[e.id] = str;
-        p = setDoc(doc(db,'exams',e.id), data);
-      }
+      try{ p = setDoc(doc(db,'exams',e.id), examToStore(e)); }
       catch(err){ p = Promise.reject(err); }
-      p.catch(function(err){ delete synced.exams[e.id]; console.error(err); showToast('模試の保存に失敗しました'); });
+      p.catch(function(err){ console.error(err); showToast('模試の保存に失敗しました'); });
     });
     prevIds.filter(function(id){ return nextIds.indexOf(id)===-1; }).forEach(function(id){
-      delete synced.exams[id];
       deleteDoc(doc(db,'exams',id)).catch(function(err){ console.error(err); });
     });
   }
   function getSubs(){ return subsCache; }
   function saveSubs(list){
-    var prevIds = subsCache.map(function(x){ return x.id; });
-    var nextIds = list.map(function(x){ return x.id; });
+    var prevIds = subsCache.map(function(s){ return s.id; });
+    var nextIds = list.map(function(s){ return s.id; });
     subsCache = list;
-    list.forEach(function(x){
-      var str = stableJson(x);
-      if(synced.subs[x.id]===str) return;
-      synced.subs[x.id] = str;
-      setDoc(doc(db,'submissions',x.id), x).catch(function(err){ delete synced.subs[x.id]; console.error(err); showToast('提出結果の保存に失敗しました'); });
+    list.forEach(function(s){
+      setDoc(doc(db,'submissions',s.id), s).catch(function(err){ console.error(err); showToast('提出結果の保存に失敗しました'); });
     });
     prevIds.filter(function(id){ return nextIds.indexOf(id)===-1; }).forEach(function(id){
-      delete synced.subs[id];
       deleteDoc(doc(db,'submissions',id)).catch(function(err){ console.error(err); });
     });
   }
   function getDrafts(){ return draftsCache; }
   function saveDrafts(obj){
+    var prevKeys = Object.keys(draftsCache);
     var nextKeys = Object.keys(obj);
     draftsCache = obj;
     nextKeys.forEach(function(k){
-      var str = stableJson(obj[k]);
-      if(synced.drafts[k]===str) return;
-      synced.drafts[k] = str;
       var idx = k.indexOf('__');
       var studentKey = k.slice(0,idx), examId = k.slice(idx+2);
       setDoc(doc(db,'drafts',k), {studentKey:studentKey, examId:examId, answers:obj[k], updatedAt:Date.now()})
-        .catch(function(err){ delete synced.drafts[k]; console.error(err); });
+        .catch(function(err){ console.error(err); });
     });
-    // 削除の判定は「Firestoreにある控え」と比べる。
-    // （getDrafts()は手元のキャッシュそのものを返すので、呼び出し側で delete した後だと、キャッシュ同士の比較では消えたことに気づけない）
-    Object.keys(synced.drafts).filter(function(k){ return nextKeys.indexOf(k)===-1; }).forEach(function(k){
-      delete synced.drafts[k];
+    prevKeys.filter(function(k){ return nextKeys.indexOf(k)===-1; }).forEach(function(k){
       deleteDoc(doc(db,'drafts',k)).catch(function(err){ console.error(err); });
     });
   }
@@ -585,13 +536,6 @@ const auth = getAuth(fbApp);
     }).join('');
     if(sm.unassigned){ body += '<tr><td>（大問未計上）</td><td>―</td><td>0</td><td>0</td><td>'+sm.unassigned+'</td><td><b>'+sm.unassigned+'</b></td></tr>'; }
     var warn = sm.warnings.map(function(w){ return '<div class="pts-warn">'+esc(w)+'</div>'; }).join('');
-    // AI取り込み用の「想定満点」と照合する（空欄なら何も表示しない）
-    var exp = exam.expectedTotal, expHtml = '';
-    if(exp!=='' && exp!=null && !isNaN(Number(exp))){
-      expHtml = Number(exp)===sm.total
-        ? '<div class="pts-ok">想定満点 '+Number(exp)+'点と一致しています</div>'
-        : '<div class="pts-warn">想定満点 '+Number(exp)+'点と合いません（現在 '+sm.total+'点、差 '+(sm.total-Number(exp))+'点）。読み取りミスや配点の入力漏れがないか確認してください</div>';
-    }
     return ''
       + '<h3>配点の確認</h3>'
       + (sm.rows.length ? '<div class="table-scroll"><table class="pts-table"><thead><tr><th>大問</th><th>問数</th><th>個別問題</th><th>完全解答G</th><th>条件付き</th><th>計</th></tr></thead><tbody>'
@@ -599,7 +543,7 @@ const auth = getAuth(fbApp);
         + '<tr class="total"><td>総合点（満点）</td><td></td><td>'+sm.totalQ+'</td><td>'+sm.totalG+'</td><td>'+sm.totalC+'</td><td>'+sm.total+'</td></tr>'
         + '</tbody></table></div>' : '<p class="hint">大問を追加すると、ここに配点の内訳が表示されます。</p>')
       + '<p class="hint" style="margin:8px 0 0">結果画面の満点・大問別の点数も、この内訳と同じ数え方で計算されます。「個別問題」は通常・複数回答の配点の合計です。</p>'
-      + expHtml + warn;
+      + warn;
   }
   function renderPointsBarText(exam){
     var sm = computePointsSummary(exam);
@@ -880,7 +824,7 @@ const auth = getAuth(fbApp);
   }
 
   function makeBlankExam(){
-    return { id:uid('exam'), name:'', subject:'', problemUrl:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:10, sections:[], groups:[], conditionalGroups:[], tags:[] };
+    return { id:uid('exam'), name:'', subject:'', problemUrl:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:4, sections:[], groups:[], conditionalGroups:[], tags:[] };
   }
 
   // ---- 解答タイマー（模試を開くと自動スタートし、大問ごとにラップを記録する） ----
@@ -1051,7 +995,6 @@ const auth = getAuth(fbApp);
     studentTab:'list', adminTab:'exams',
     currentExamId:null, currentAnswers:null, currentSubmission:null, resultOrigin:'list',
     editingExam:null, adminStatsExamId:null, adminDeleteYear:null,
-    usageDau:'', usageOpens:3, usageAdminOpens:5,
     examTimer:null, examTimerExamId:null,
     trendMetric:'rate',
     // 検索・タグ絞り込みの状態。模試一覧／過去の結果／成績推移でそれぞれ別々に持つ
@@ -1412,79 +1355,17 @@ const auth = getAuth(fbApp);
       + '<button class="btn btn-secondary btn-block" style="margin-top:20px" data-action="backFromResult">← 戻る</button>';
   }
 
-  // ---- Firebase無料枠（読み取り5万/日）の使用量の目安 ----
-  // アプリを開くたびに全データを読み直す作りなので、「開く回数 × 読むドキュメント数」で概算する。
-  var USAGE_LIMIT_READS = 50000;
-  var USAGE_WARN_RATIO = 0.6, USAGE_DANGER_RATIO = 0.9;
-  var USAGE_DRAFTS_PER_STUDENT = 3; // 1人あたりの途中保存の数（想定）
-  function usageNumOr(v, def){ return (v==='' || v==null || isNaN(Number(v))) ? def : Math.max(0, Number(v)); }
-  function usageFmt(n){ return Math.round(n).toLocaleString('ja-JP'); }
-  function usageEstimate(){
-    var exams = getExams(), subs = getSubs();
-    var E = exams.length;
-    var P = exams.filter(function(e){ return e.status==='published'; }).length;
-    var T = subs.length;
-    var students = {}, recent = {}, since = Date.now() - 7*24*60*60*1000;
-    subs.forEach(function(x){
-      students[x.studentKey] = true;
-      if(x.submittedAt >= since) recent[x.studentKey] = true;
-    });
-    var N = Object.keys(students).length;
-    var autoDau = Object.keys(recent).length;
-    var dau = usageNumOr(state.usageDau, autoDau);
-    var opens = usageNumOr(state.usageOpens, 3);
-    var adminOpens = usageNumOr(state.usageAdminOpens, 5);
-    var avgSubs = N>0 ? T/N : 0;
-    var studentReads = dau * opens * (P + avgSubs + USAGE_DRAFTS_PER_STUDENT);
-    var adminReads = adminOpens * (E + T);
-    var total = studentReads + adminReads;
-    var ratio = total / USAGE_LIMIT_READS;
-    var level = ratio<USAGE_WARN_RATIO ? 'ok' : ratio<USAGE_DANGER_RATIO ? 'warn' : 'danger';
-    return { E:E, P:P, T:T, N:N, autoDau:autoDau, studentReads:studentReads, adminReads:adminReads, total:total, ratio:ratio, level:level };
-  }
-  function renderAdminUsage(){
-    var u = usageEstimate();
-    var pct = Math.round(u.ratio*100);
-    var msg = u.level==='ok' ? '安心：1日の読み取りは無料枠の約'+pct+'％と推定されます'
-      : u.level==='warn' ? '注意：1日の読み取りは無料枠の約'+pct+'％と推定されます。古い学年度のデータを下の「一括削除」で消すと下がります'
-      : '危険：1日の読み取りが無料枠を超える可能性が高いです（推定'+pct+'％）。古い学年度のデータを下の「一括削除」で消してください';
-    var cls = u.level==='ok' ? 'pts-ok' : u.level==='warn' ? 'pts-warn' : 'pts-bad';
-    function val(x){ return (x==='' || x==null) ? '' : esc(String(x)); }
-    return ''
-      + '<h2>Firebase使用量の目安</h2>'
-      + '<div class="'+cls+'">'+msg+'</div>'
-      + '<div class="stat-table" style="margin-top:10px">'
-      +   '<div class="stat-row"><span class="stat-label">登録済みの模試</span><span>'+u.E+'件（公開中 '+u.P+'件）</span></div>'
-      +   '<div class="stat-row"><span class="stat-label">提出の累計</span><span>'+usageFmt(u.T)+'件（'+u.N+'人分）</span></div>'
-      +   '<div class="stat-row"><span class="stat-label">推定の読み取り／日</span><span>'+usageFmt(u.total)+' ／ '+usageFmt(USAGE_LIMIT_READS)+'</span></div>'
-      +   '<div class="stat-row"><span class="stat-label">　うち生徒がアプリを開く分</span><span>'+usageFmt(u.studentReads)+'</span></div>'
-      +   '<div class="stat-row"><span class="stat-label">　うち管理画面を開く分</span><span>'+usageFmt(u.adminReads)+'</span></div>'
-      + '</div>'
-      + '<label>1日に使う生徒の数（想定）<input type="number" min="0" data-field="usageDau" data-rerender="true" placeholder="空欄＝自動（直近7日に提出した'+u.autoDau+'人）" value="'+val(state.usageDau)+'"></label>'
-      + '<label>生徒1人が1日にアプリを開く回数（想定）<input type="number" min="0" data-field="usageOpens" data-rerender="true" value="'+val(state.usageOpens)+'"></label>'
-      + '<label>管理画面を1日に開く回数（想定）<input type="number" min="0" data-field="usageAdminOpens" data-rerender="true" value="'+val(state.usageAdminOpens)+'"></label>'
-      + '<p class="hint">推定 ＝ 利用生徒数 × 開く回数 ×（公開模試数 ＋ 1人あたりの提出数 ＋ 途中保存'+USAGE_DRAFTS_PER_STUDENT+'）＋ 管理画面を開く回数 ×（全模試数 ＋ 提出の累計）。アプリを開くたびに全データを読み直すため、提出の累計が増えると管理画面を開くだけで大きく増えます。</p>'
-      + '<p class="hint">「自動」は直近7日に提出した生徒の数なので、開くだけの生徒は含まれません。実際の利用が多そうなら数字を入れてください。</p>'
-      + '<p class="hint">無料枠は1日あたり読み取り5万・書き込み2万・削除2万。超えるとその日は読み込みが止まり、日本時間の夕方ごろ（16〜17時）のリセットで戻ります。書き込みは1提出につき1件なので、通常は問題になりません。</p>';
-  }
-  function renderAdminData(){
-    return renderAdminUsage() + '<div class="section-divider"></div>' + renderAdminDelete();
-  }
-
   // ---- render: admin ----
   function renderAdminHome(){
     var tab = state.adminTab||'exams';
-    var usageLevel = usageEstimate().level;
-    var usageDot = usageLevel==='ok' ? '' : '<span class="tab-dot '+usageLevel+'"></span>';
     return ''
       + '<div class="topbar"><div class="user-badge">管理者</div><h1>管理画面</h1><button class="btn-link" data-action="logout">ログアウト</button></div>'
       + '<div class="tabs">'
       + '<button class="tab '+(tab==='exams'?'active':'')+'" data-action="setAdminTab" data-tab="exams">模試管理</button>'
       + '<button class="tab '+(tab==='stats'?'active':'')+'" data-action="setAdminTab" data-tab="stats">統計</button>'
-      + '<button class="tab '+(tab==='delete'?'active':'')+'" data-action="setAdminTab" data-tab="delete">データ管理'+usageDot+'</button>'
-      + '<button class="tab '+(tab==='ai'?'active':'')+'" data-action="setAdminTab" data-tab="ai">AI機能</button>'
+      + '<button class="tab '+(tab==='delete'?'active':'')+'" data-action="setAdminTab" data-tab="delete">データ削除</button>'
       + '</div>'
-      + (tab==='exams' ? renderAdminExamList() : tab==='stats' ? renderAdminStats() : tab==='delete' ? renderAdminData() : renderAdminAI());
+      + (tab==='exams' ? renderAdminExamList() : tab==='stats' ? renderAdminStats() : renderAdminDelete());
   }
 
   function renderAdminExamList(){
@@ -1562,10 +1443,6 @@ const auth = getAuth(fbApp);
       + '<button class="btn btn-danger" data-action="bulkDeleteYear">この学年度のデータを一括削除</button>';
   }
 
-  function renderAdminAI(){
-    return '<div class="ai-joke"><div class="ai-emoji">🤖</div><p>ちょっとしんどいです</p><p class="ai-coming">COMING NOT SOON</p></div>';
-  }
-
   // ---- render: exam editor ----
   function renderExamEdit(){
     var exam = state.editingExam;
@@ -1578,11 +1455,10 @@ const auth = getAuth(fbApp);
       + '<label>教科<input data-field="editingExam.subject" value="'+esc(exam.subject)+'" placeholder="例: 国語"></label>'
       + '<label>タグ（成績推移で絞り込みに使います）<input type="text" data-field="editingExam.tagsText" value="'+esc(exam.tagsText||'')+'" placeholder="例: 第2回, 国語, リスニング"></label>'
       + '<p class="hint">タグはカンマまたは読点で区切ります。生徒が提出した結果にもこのタグが引き継がれます。</p>'
-      + '<p class="hint">学年度: '+esc(gakunendoLabel(exam.year))+'（作成日から自動判定・変更不可。管理画面の「データ管理」タブで学年度ごとまとめて削除できます）</p>'
+      + '<p class="hint">学年度: '+esc(gakunendoLabel(exam.year))+'（作成日から自動判定・変更不可。管理画面の「データ削除」タブで学年度ごとまとめて削除できます）</p>'
       + '<label>問題URL（任意。入力すると解答画面に「問題」というリンクが表示されます）<input type="text" data-field="editingExam.problemUrl" value="'+esc(exam.problemUrl||'')+'" placeholder="例: https://example.com/mondai"></label>'
       + '<label>解説URL（任意。入力すると結果画面に「解説」というリンクが表示されます）<input type="text" data-field="editingExam.explanationUrl" value="'+esc(exam.explanationUrl||'')+'" placeholder="例: https://example.com/kaisetsu"></label>'
       + '<label>デフォルト選択肢数<input type="number" min="2" max="10" data-field="editingExam.defaultChoices" value="'+exam.defaultChoices+'"></label>'
-      + renderJsonImportBox(exam)
       + '<div class="pts-box" id="pointsSummary">'+renderPointsSummaryHtml(exam)+'</div>'
       + '<h2>大問</h2>'
       + renderWholeBulkBox(exam)
@@ -1791,335 +1667,9 @@ const auth = getAuth(fbApp);
     setState({screen:'examResult', currentSubmission: sub, currentAnswers:null, resultOrigin:'list'});
   }
 
-  // ================= AI（JSON）取り込み =================
-  // AIが出力したJSONを、編集画面の形式に変換して読み込む。内部ID（大問・問題・条件付き配点）はここで自動採番する。
-  function aiToInt(v){
-    if(typeof v==='number' && isFinite(v) && Math.floor(v)===v) return v;
-    if(typeof v==='string'){ var t = normalizeDigits(v).trim(); if(/^-?\d+$/.test(t)) return Number(t); }
-    return null;
-  }
-  // 配列または "1,4" のような文字列を、選択肢の値（10番目は0）の配列にする。不正な値があれば null
-  function aiValueList(v){
-    var arr;
-    if(Array.isArray(v)) arr = v;
-    else if(typeof v==='string' || typeof v==='number') arr = parseNoList(String(v));
-    else return null;
-    var out = [];
-    for(var i=0;i<arr.length;i++){
-      var n = aiToInt(arr[i]);
-      if(n==null || n<0 || n>10) return null;
-      out.push(choiceValue(n));
-    }
-    return out;
-  }
-  function aiNoList(v){
-    var arr;
-    if(Array.isArray(v)) arr = v;
-    else if(v==null) return [];
-    else arr = parseNoList(String(v));
-    return arr.map(function(x){ return normalizeDigits(String(x)).trim(); }).filter(function(x){ return x!==''; });
-  }
-  // AIの返答から JSON 部分だけを取り出す（```json で囲まれていても、前後に文章があってもよい）
-  function extractJsonText(text){
-    var t = String(text||'').trim();
-    var fence = t.match(/```(?:json|JSON)?\s*([\s\S]*?)```/);
-    if(fence) t = fence[1].trim();
-    var a = t.indexOf('{'), b = t.lastIndexOf('}');
-    if(a===-1 || b<a) return null;
-    return t.slice(a, b+1);
-  }
-
-  // 戻り値: { exam, errors, warnings, notes }。errors があれば取り込めない。warnings は取り込めるが要確認。
-  function jsonToExam(raw){
-    var errors = [], warnings = [];
-    if(!raw || typeof raw!=='object' || Array.isArray(raw)){
-      return { errors:['JSONの一番外側がオブジェクト { } になっていません'], warnings:[], notes:[] };
-    }
-    function clean(list){ return list.map(function(t){ return String(t).trim(); }).filter(function(t){ return t!==''; }); }
-    var exam = {
-      name: String(raw.name==null?'':raw.name).trim(),
-      subject: String(raw.subject==null?'':raw.subject).trim(),
-      tags: Array.isArray(raw.tags) ? clean(raw.tags) : (typeof raw.tags==='string' ? clean(raw.tags.split(/[,、，]/)) : []),
-      sections: [], groups: [], conditionalGroups: []
-    };
-    var notes = Array.isArray(raw.notes) ? clean(raw.notes) : (typeof raw.notes==='string' ? clean([raw.notes]) : []);
-
-    if(!Array.isArray(raw.sections) || raw.sections.length===0){
-      errors.push('sections（大問の配列）がありません');
-    }
-    var typeMap = { normal:'normal', multi:'multi', complete:'complete', '通常':'normal', '複数':'multi', '複数回答':'multi', '完全':'complete', '完全解答':'complete' };
-    var seenNo = {};
-    var allQ = [];
-    (Array.isArray(raw.sections) ? raw.sections : []).forEach(function(sec, si){
-      var title = String(sec && sec.title!=null ? sec.title : '').trim();
-      var label = title || ('大問'+(si+1));
-      var outSec = { id:uid('sec'), title:title, questions:[] };
-      if(!sec || !Array.isArray(sec.questions) || sec.questions.length===0){
-        errors.push(label+'：questions（問題の配列）がありません');
-        return;
-      }
-      sec.questions.forEach(function(q, qi){
-        if(!q || typeof q!=='object'){ errors.push(label+' '+(qi+1)+'番目：問題がオブジェクトになっていません'); return; }
-        var no = q.no!=null ? normalizeDigits(String(q.no)).trim() : '';
-        var where = label+' '+(qi+1)+'番目'+(no ? '（問'+no+'）' : '');
-        if(no===''){ errors.push(where+'：no（問題番号）がありません'); return; }
-        if(seenNo[no]) warnings.push('問題番号「'+no+'」が重複しています（条件付き配点の対象指定は先に登録された問題を指します）');
-        seenNo[no] = true;
-        var type = typeMap[q.type==null ? 'normal' : String(q.type).trim().toLowerCase()];
-        if(!type){ errors.push(where+'：type は "normal" / "multi" / "complete" のいずれかにしてください'); return; }
-        var choices = null;
-        if(q.choices!=null && q.choices!==''){
-          var c = aiToInt(q.choices);
-          if(c==null || c<2 || c>10) warnings.push(where+'：choices（選択肢数）が不正なため、既定の選択肢数を使います');
-          else choices = c;
-        }
-        var pts = 0;
-        if(type!=='complete'){
-          var pNum = (q.points==null || q.points==='') ? NaN : Number(normalizeDigits(String(q.points)));
-          if(isNaN(pNum)) warnings.push(where+'：points（配点）が読み取れなかったため0点にしました');
-          else pts = pNum;
-        } else if(q.points!=null && q.points!=='' && Number(q.points)){
-          warnings.push(where+'：完全解答の問題自身の points は使われないため0にしました（配点は groups 側に書きます）');
-        }
-        var item = { id:uid('q'), no:no, choices:choices, type:type, points:pts };
-        var gid = String(q.groupId==null ? '' : q.groupId).trim();
-        if(type==='multi'){
-          var cands = aiValueList(q.candidates);
-          if(cands==null || cands.length===0){
-            warnings.push(where+'：candidates（正解候補）が読み取れませんでした');
-            cands = [];
-          }
-          item.candidates = cands;
-          item.groupId = gid;
-        } else {
-          var ans = null;
-          if(q.answer!=null && q.answer!==''){
-            ans = aiToInt(q.answer);
-            if(ans==null || ans<0 || ans>10){ warnings.push(where+'：answer が 0〜9（10番目は0）の数字ではありません'); ans = null; }
-          }
-          if(ans==null && type==='normal') warnings.push(where+'：answer（正解）が空です');
-          item.answer = ans==null ? null : choiceValue(ans);
-          if(type==='complete') item.groupId = gid;
-        }
-        outSec.questions.push(item);
-        allQ.push({ item:item, where:where });
-      });
-      exam.sections.push(outSec);
-    });
-
-    // 完全解答グループ
-    var seenGid = {};
-    (Array.isArray(raw.groups) ? raw.groups : []).forEach(function(g, gi){
-      if(!g || typeof g!=='object'){ errors.push('groups '+(gi+1)+'番目：オブジェクトになっていません'); return; }
-      var gid = String(g.groupId==null ? '' : g.groupId).trim();
-      if(gid===''){ errors.push('groups '+(gi+1)+'番目：groupId がありません'); return; }
-      if(seenGid[gid]) warnings.push('グループID「'+gid+'」が重複して定義されています');
-      seenGid[gid] = true;
-      var mode = 'combo';
-      if(g.mode!=null && g.mode!==''){
-        var m = String(g.mode).trim().toLowerCase();
-        if(m==='individual') mode = 'individual';
-        else if(m!=='combo') warnings.push('グループ「'+gid+'」：mode は "combo" か "individual" にしてください（combo として読み込みました）');
-      }
-      var pNum = (g.points==null || g.points==='') ? NaN : Number(normalizeDigits(String(g.points)));
-      if(isNaN(pNum)){ warnings.push('グループ「'+gid+'」：points（配点）が読み取れなかったため0点にしました'); pNum = 0; }
-      var combos = [];
-      if(mode==='combo'){
-        (Array.isArray(g.combos) ? g.combos : []).forEach(function(c){
-          var arr = aiValueList(c);
-          if(arr==null || arr.length===0) errors.push('グループ「'+gid+'」：combos に読み取れない組み合わせがあります');
-          else combos.push(arr);
-        });
-        if(combos.length===0) warnings.push('グループ「'+gid+'」：combos（正解の組み合わせ）が空です。このままでは誰も正解になりません');
-      }
-      exam.groups.push({ groupId:gid, points:pNum, mode:mode, combos:combos });
-    });
-
-    // 問題とグループの突き合わせ
-    var groupById = {};
-    exam.groups.forEach(function(g){ groupById[g.groupId] = g; });
-    var completeCount = {};
-    allQ.forEach(function(e){
-      if(e.item.type==='complete' && e.item.groupId) completeCount[e.item.groupId] = (completeCount[e.item.groupId]||0)+1;
-    });
-    exam.groups.forEach(function(g){
-      var n = completeCount[g.groupId]||0;
-      if(g.mode==='combo' && n){
-        g.combos.forEach(function(c){
-          if(c.length!==n) warnings.push('グループ「'+g.groupId+'」：組み合わせ ['+c.join(',')+'] の個数が、このグループの問題数（'+n+'）と合いません');
-        });
-      }
-    });
-    allQ.forEach(function(e){
-      var g = e.item.type==='complete' ? groupById[e.item.groupId] : null;
-      if(g && g.mode==='individual' && e.item.answer==null) warnings.push(e.where+'：個別正解モードのグループですが answer が空です');
-    });
-    var multiGroups = {};
-    allQ.forEach(function(e){
-      if(e.item.type==='multi' && e.item.groupId){
-        var mg = multiGroups[e.item.groupId] = multiGroups[e.item.groupId] || { n:0, maxCands:0 };
-        mg.n++;
-        mg.maxCands = Math.max(mg.maxCands, (e.item.candidates||[]).length);
-      }
-    });
-    Object.keys(multiGroups).forEach(function(gid){
-      if(multiGroups[gid].maxCands < multiGroups[gid].n) warnings.push('複数回答グループ「'+gid+'」：問題数（'+multiGroups[gid].n+'）より正解候補が少なく、全問正解にはなりません');
-    });
-
-    // 条件付き配点グループ（対象問題が実在するかは、あとで保存時と同じ検証にかける）
-    (Array.isArray(raw.conditionalGroups) ? raw.conditionalGroups : []).forEach(function(cg, ci){
-      var name = '条件付き配点'+(ci+1);
-      if(!cg || typeof cg!=='object'){ errors.push(name+'：オブジェクトになっていません'); return; }
-      var mode = cg.mode==null || cg.mode==='' ? 'and' : String(cg.mode).trim().toLowerCase();
-      if(mode!=='and' && mode!=='branch'){ errors.push(name+'：mode は "and" か "branch" にしてください'); return; }
-      var pNum = (cg.points==null || cg.points==='') ? NaN : Number(normalizeDigits(String(cg.points)));
-      if(isNaN(pNum)){ warnings.push(name+'：points（配点）が読み取れなかったため0点にしました'); pNum = 0; }
-      var sid = '';
-      if(cg.sectionTitle!=null && String(cg.sectionTitle).trim()!==''){
-        var st = String(cg.sectionTitle).trim();
-        var hit = exam.sections.filter(function(s){ return s.title===st; })[0];
-        if(hit) sid = hit.id;
-        else warnings.push(name+'：sectionTitle「'+st+'」に一致する大問がないため、計上先は自動で決めます');
-      }
-      var out = { id:uid('cg'), label:String(cg.label==null ? '' : cg.label).trim(), sectionId:sid, mode:mode, points:pNum };
-      if(mode==='and'){
-        if(!Array.isArray(cg.targets) || cg.targets.length===0){ errors.push(name+'：targets（対象問題の配列）がありません'); return; }
-        var bad = false, targets = [];
-        cg.targets.forEach(function(t){
-          var no = aiNoList(t && t.no)[0];
-          var allowed = aiValueList(t && t.allowed);
-          if(!no || !allowed || allowed.length===0){ bad = true; return; }
-          targets.push({ no:no, allowed:allowed });
-        });
-        if(bad){ errors.push(name+'：targets の no / allowed が読み取れない行があります'); return; }
-        out.targets = targets;
-        out.allowDuplicates = !!cg.allowDuplicates;
-      } else {
-        var trig = aiNoList(cg.triggerNo)[0];
-        if(!trig){ errors.push(name+'：triggerNo（トリガー問題番号）がありません'); return; }
-        out.triggerNo = trig;
-        out.matchMode = String(cg.matchMode||'').trim().toLowerCase()==='complete' ? 'complete' : 'multi';
-        if(!Array.isArray(cg.branches) || cg.branches.length===0){ errors.push(name+'：branches（分岐の配列）がありません'); return; }
-        var badB = false, branches = [];
-        cg.branches.forEach(function(b){
-          var w = aiToInt(b && b.when);
-          var tg = aiNoList(b && b.targets);
-          var al = aiValueList(b && b.allowed);
-          if(w==null || w<0 || w>10 || tg.length===0 || !al || al.length===0){ badB = true; return; }
-          branches.push({ when:choiceValue(w), targets:tg, allowed:al });
-        });
-        if(badB){ errors.push(name+'：branches の when / targets / allowed が読み取れない分岐があります'); return; }
-        out.branches = branches;
-      }
-      exam.conditionalGroups.push(out);
-    });
-
-    return { exam:exam, errors:errors, warnings:warnings, notes:notes };
-  }
-
-  // 取り込み結果を、いま編集中の模試に重ねた「編集画面用の模試」にして返す（まだ適用はしない）
-  function buildImportCandidate(parsed, cur){
-    var curTags = (cur.tagsText||'').split(/[,、]/).map(function(t){ return t.trim(); }).filter(function(t){ return t!==''; });
-    var base = {
-      id: cur.id,
-      name: parsed.exam.name || (cur.name||'').trim(),
-      subject: parsed.exam.subject || (cur.subject||'').trim(),
-      tags: parsed.exam.tags.length ? parsed.exam.tags : curTags,
-      problemUrl: cur.problemUrl||'', explanationUrl: cur.explanationUrl||'',
-      year: cur.year, status: cur.status||'draft', defaultChoices: cur.defaultChoices,
-      sections: parsed.exam.sections, groups: parsed.exam.groups, conditionalGroups: parsed.exam.conditionalGroups
-    };
-    return loadExamForEdit(base);
-  }
-
-  // AIに渡すプロンプト。アプリの採点ルールをそのまま説明してある。
-  function buildAiPrompt(exam){
-    var dc = Number(exam && exam.defaultChoices) || 10;
-    return [
-      'あなたはマークシート模試の採点データを作るアシスタントです。',
-      '添付した画像（正解一覧・配点表・採点基準・解答上の注意書きなど）を読み取り、下記の仕様に従ったJSONを1つだけ出力してください。',
-      '',
-      '【出力ルール】',
-      '- 出力はJSONのみ（```json のコードブロックで囲んでよい）。前置きや解説の文章は書かない。',
-      '- 読み取れない・判断に迷う箇所は推測で埋めず、その値を null にして、理由を notes に書く。',
-      '- マーク番号の値は 1〜9 はそのまま、10番目の選択肢は「0」と書く（10 ではなく 0）。answer・candidates・combos・allowed・when すべて同じ。',
-      '- no（問題番号）は文字列。模試全体で重複させない。大問ごとに1から振り直されている場合は通し番号にして、その旨を notes に書く。',
-      '- groupId は半角英数字の任意の文字列（例: g21, m9）。同じ組の問題には同じIDを付け、組ごとに違うIDにする。',
-      '',
-      '【全体の形】',
-      '{',
-      '  "name": "模試名（読み取れなければ空文字）",',
-      '  "subject": "教科",',
-      '  "tags": ["第1回", "国語"],',
-      '  "sections": [ { "title": "第1問", "questions": [ 問題, ... ] } ],',
-      '  "groups": [ 完全解答グループ, ... ],',
-      '  "conditionalGroups": [ 条件付き配点グループ, ... ],',
-      '  "notes": ["人が確認すべき点（なければ空配列）"]',
-      '}',
-      '',
-      '【問題の種類 type】',
-      '1) normal（通常）: 1問ごとに正解が1つ。',
-      '   {"no":"1","type":"normal","answer":3,"points":2,"choices":4}',
-      '2) multi（複数回答）: 「解答の順序は問わない」「正解が複数あり、どれを選んでもよい」問題。各問は candidates（正解になりうる値）のどれかを選べば正解で、各問に個別に points を付ける。',
-      '   同じ選択肢を2問で使い回せない場合（例: 「問9と問10は①③を順不同で」）は、該当する問に同じ groupId を付ける。groupId を付けなければ各問は独立に採点される。',
-      '   {"no":"9","type":"multi","candidates":[1,3],"groupId":"m9","points":3}',
-      '3) complete（完全解答）: 複数の解答欄がすべて合って初めて得点になる問題。points は問題側ではなく groups 側に書く（問題側は 0 にする）。同じ組の問題には同じ groupId を付ける。',
-      '   {"no":"21","type":"complete","groupId":"g21","points":0}',
-      '',
-      'choices はその問題のマーク欄の選択肢数。画像から分かるなら必ず書く（このアプリの既定は '+dc+' 個で、既定と同じなら null でもよい）。',
-      '',
-      '【完全解答グループ groups】',
-      '- 組み合わせが順不同で判定される場合は mode を "combo" にして、正解の組み合わせを combos に書く。並べ替えは自動で同一視されるので、並び替えを全部書く必要はない。別の組み合わせも正解になる場合だけ複数書く。',
-      '  {"groupId":"g21","points":4,"mode":"combo","combos":[[1,4]]}',
-      '- 各欄に固有の正解があり、全問正解でまとめて配点される場合は mode を "individual" にして、そのグループの各問題（type が complete）に answer を書く。',
-      '  {"groupId":"g23","points":4,"mode":"individual"}',
-      '',
-      '【条件付き配点グループ conditionalGroups】',
-      '個別の問題とは別に、条件を満たしたときだけ加点するボーナス配点。「〇〇のとき△△なら加点」「ア・イが両方正解のときのみ加点」のような記載があるときだけ作る。なければ空配列。',
-      '共通項目: label（名称）, points（配点）, 任意で sectionTitle（加点を計上する大問のタイトル。省略すると最初の対象問題がある大問）。',
-      '(a) mode "and": 対象の問ごとに許容値を指定し、すべてが許容値に入れば加点する。',
-      '  {"label":"問21・22","points":2,"mode":"and","targets":[{"no":"21","allowed":[1,4]},{"no":"22","allowed":[1,4]}],"allowDuplicates":false}',
-      '  allowDuplicates が false のとき、許容値が同じ問どうしが同じ値を選ぶと不可になる。',
-      '(b) mode "branch": トリガー問題の答えによって、判定する問と許容値が切り替わる。',
-      '  {"label":"問28分岐","points":3,"mode":"branch","triggerNo":"28","matchMode":"multi","branches":[{"when":1,"targets":["29","30"],"allowed":[1,3]},{"when":2,"targets":["29"],"allowed":[4]}]}',
-      '  matchMode "multi": 各対象問が許容値のいずれかで、同じ値の重複は不可。',
-      '  matchMode "complete": 対象問の答えが、順不同で許容値と過不足なく一致する（許容値の個数＝対象問の数）。',
-      '',
-      '【出力前のチェック】',
-      '- 配点の合計（normal と multi の points ＋ groups の points ＋ conditionalGroups の points）を計算し、画像に満点の記載があれば一致を確認する。合わなければ notes に書く。',
-      '- type や groupId の判断に迷った問題は、問題番号と理由を notes に書く。'
-    ].join('\n');
-  }
-
-  function renderJsonImportBox(exam){
-    var errs = (exam.importErrors||[]).map(function(m){ return '<p class="error">'+esc(m)+'</p>'; }).join('');
-    var rep = exam.importReport, repHtml = '';
-    if(rep){
-      var items = (rep.notes||[]).map(function(n){ return '<div class="pts-warn">AIからの確認事項：'+esc(n)+'</div>'; })
-        .concat((rep.warnings||[]).map(function(w){ return '<div class="pts-warn">'+esc(w)+'</div>'; }));
-      repHtml = '<div class="pts-box" style="margin:12px 0 0"><h3>読み込み結果</h3>'
-        + (items.length ? items.join('') : '<div class="pts-ok">読み込みました。確認事項はありません</div>')
-        + '<p class="hint" style="margin:8px 0 0">この下の「配点の確認」で満点と大問別の配点も確認してください。直したい箇所は、下の編集欄でそのまま修正できます。</p>'
-        + '<button class="btn-link" data-action="clearImportReport">この表示を閉じる</button></div>';
-    }
-    return ''
-      + '<div class="bulk-paste-whole">'
-      + '<h3 class="section-title">AIで作ったJSONから一括作成</h3>'
-      + '<p class="hint">スクショと下のプロンプトをAIに渡し、返ってきたJSONをここに貼り付けます。大問・問題・完全解答グループ・条件付き配点までまとめて読み込めます（今の大問・グループ・条件付き配点はすべて置き換わります）。</p>'
-      + '<div class="row"><button class="btn btn-secondary" data-action="copyAiPrompt">プロンプトをコピー</button>'
-      + '<button class="btn-link" data-action="togglePromptView">'+(exam.promptOpen ? 'プロンプトを隠す' : 'プロンプトを表示')+'</button></div>'
-      + (exam.promptOpen ? '<textarea readonly rows="12">'+esc(buildAiPrompt(exam))+'</textarea>' : '')
-      + '<label>AIが返したJSON<textarea rows="8" data-field="editingExam.jsonText" placeholder="{ &quot;name&quot;: ... }">'+esc(exam.jsonText||'')+'</textarea></label>'
-      + '<label>想定満点（任意。入力すると「配点の確認」で照合します）<input type="number" data-field="editingExam.expectedTotal" value="'+(exam.expectedTotal==null ? '' : esc(exam.expectedTotal))+'" placeholder="例: 200"></label>'
-      + errs
-      + '<button class="btn btn-primary btn-block" data-action="applyJsonImport">JSONを読み込む</button>'
-      + repHtml
-      + '</div>';
-  }
-
-  // 保存用の模試データを組み立てて検証する。戻り値: { exam } または { error }
-  function buildFinalExam(src){
-    if(!src.name || !src.name.trim()){ return { error:'模試名を入力してください' }; }
+  function saveExamAction(){
+    var src = state.editingExam;
+    if(!src.name || !src.name.trim()){ showToast('模試名を入力してください'); return; }
     var finalized = {
       id: src.id,
       name: src.name.trim(),
@@ -2129,7 +1679,7 @@ const auth = getAuth(fbApp);
       explanationUrl: (src.explanationUrl||'').trim(),
       year: src.year,
       status: src.status||'draft',
-      defaultChoices: Number(src.defaultChoices)||10,
+      defaultChoices: Number(src.defaultChoices)||4,
       sections: (src.sections||[]).map(function(sec){
         return {
           id: sec.id,
@@ -2217,14 +1767,8 @@ const auth = getAuth(fbApp);
       }
       finalized.conditionalGroups.push(out);
     });
-    if(cgError){ return { error:cgError }; }
-    return { exam:finalized };
-  }
+    if(cgError){ showToast(cgError); return; }
 
-  function saveExamAction(){
-    var built = buildFinalExam(state.editingExam);
-    if(built.error){ showToast(built.error); return; }
-    var finalized = built.exam;
     var exams = getExams();
     var idx = -1;
     for(var i=0;i<exams.length;i++){ if(exams[i].id===finalized.id){ idx=i; break; } }
@@ -2487,65 +2031,6 @@ const auth = getAuth(fbApp);
       });
     },
     saveExam: function(){ saveExamAction(); },
-    togglePromptView: function(){ state.editingExam.promptOpen = !state.editingExam.promptOpen; render(); },
-    copyAiPrompt: function(){
-      var text = buildAiPrompt(state.editingExam);
-      function done(){ showToast('プロンプトをコピーしました'); }
-      function fallback(){
-        var ta = document.createElement('textarea');
-        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        try{ document.execCommand('copy'); done(); }
-        catch(e){ showToast('コピーできませんでした。「プロンプトを表示」から手動でコピーしてください'); }
-        document.body.removeChild(ta);
-      }
-      if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done, fallback); }
-      else fallback();
-    },
-    clearImportReport: function(){ state.editingExam.importReport = null; render(); },
-    applyJsonImport: function(){
-      var ex = state.editingExam;
-      ex.importErrors = null;
-      var txt = extractJsonText(ex.jsonText);
-      if(txt==null){ ex.importErrors = ['JSONが見つかりません。AIの出力（{ から } まで）を貼り付けてください']; render(); return; }
-      var raw;
-      try{ raw = JSON.parse(txt); }
-      catch(e){ ex.importErrors = ['JSONの形式が正しくありません：'+e.message]; render(); return; }
-      var parsed = jsonToExam(raw);
-      if(parsed.errors.length){ ex.importErrors = parsed.errors; render(); return; }
-      var cand = buildImportCandidate(parsed, ex);
-      // 保存時と同じ検証（条件付き配点の対象問題が実在するか等）にかける。模試名が空でも取り込みは止めない
-      var chk = buildFinalExam(Object.assign({}, cand, { name:(cand.name||'').trim() || '（仮）' }));
-      if(chk.error){ ex.importErrors = [chk.error]; render(); return; }
-      var sm = computePointsSummary(cand);
-      var nQ = 0;
-      cand.sections.forEach(function(s){ nQ += s.questions.length; });
-      var warns = [];
-      var exp = ex.expectedTotal;
-      if(exp!=='' && exp!=null && !isNaN(Number(exp)) && Number(exp)!==sm.total){ warns.push('想定満点 '+Number(exp)+'点と合いません（読み取った満点: '+sm.total+'点）。'); }
-      var nWarn = parsed.warnings.length + sm.warnings.length;
-      if(nWarn>0) warns.push('確認事項が'+nWarn+'件あります（読み込み後に表示されます）。');
-      openConfirm({
-        message:'大問'+cand.sections.length+'個・計'+nQ+'問を読み込みます（満点 '+sm.total+'点）。現在の大問・完全解答グループ・条件付き配点はすべて置き換えられます。',
-        warn: warns.length ? warns.join('') : null,
-        confirmLabel:'読み込む',
-        danger:true,
-        onConfirm:function(){
-          var cur = state.editingExam;
-          cur.sections = cand.sections;
-          cur.groups = cand.groups;
-          cur.conditionalGroups = cand.conditionalGroups;
-          if(parsed.exam.name) cur.name = parsed.exam.name;
-          if(parsed.exam.subject) cur.subject = parsed.exam.subject;
-          if(parsed.exam.tags.length) cur.tagsText = parsed.exam.tags.join('、');
-          cur.jsonText = '';
-          cur.importErrors = null;
-          cur.importReport = { notes:parsed.notes, warnings:parsed.warnings };
-          render();
-          showToast('読み込みました。内容を確認して保存してください');
-        }
-      });
-    },
     bulkDeleteYear: function(){
       var yearsAvail = [];
       getExams().forEach(function(e){ if(e.year!=null && yearsAvail.indexOf(e.year)===-1) yearsAvail.push(e.year); });
