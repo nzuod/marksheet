@@ -111,6 +111,8 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
 .bubbles{ display:flex; gap:8px; flex-wrap:wrap; }
 .bubble{ width:38px; height:38px; border-radius:50%; border:2px solid var(--line); background:var(--surface-2); color:var(--ink); font-weight:700; cursor:pointer; transition:background .12s, border-color .12s, transform .08s; }
 .bubble:active{ transform:scale(0.92); }
+.bubbles.dense{ gap:6px; }
+.bubbles.dense .bubble{ width:32px; height:32px; font-size:0.85rem; }
 .bubble.selected{ background:var(--accent); border-color:var(--accent); color:var(--accent-contrast); }
 
 .answer-footer{ position:sticky; bottom:env(safe-area-inset-bottom,0px); background:var(--paper); padding:14px 0; margin-top:20px; border-top:1px solid var(--line); display:flex; flex-direction:column; gap:8px; }
@@ -298,8 +300,36 @@ const auth = getAuth(fbApp);
     var d = new Date(ts);
     return (d.getMonth()+1)+'/'+d.getDate();
   }
-  // 選択肢は10個目を「10」ではなく「0」として、表示だけでなく内部の値としても保持する
-  function choiceValue(n){ return Number(n)%10; }
+  // ---- 教科ごとのマークシート ----
+  // マークの内部値: 0〜9 は数字そのまま、a〜f は 10〜15、「ー」（マイナス）は -1。
+  var SUBJECTS = ['数学','英国社','理科','情報'];
+  var SHEETS = {
+    '数学':   [-1,0,1,2,3,4,5,6,7,8,9],
+    '英国社': [1,2,3,4,5,6,7,8,9],
+    '理科':   [1,2,3,4,5,6,7,8,9,0,10,11],
+    '情報':   [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
+  };
+  var SHEET_DEFAULT = [1,2,3,4,5,6,7,8,9,0]; // 教科未設定・旧形式の模試用
+  function sheetFor(subject){
+    var key = String(subject==null?'':subject).trim();
+    return Object.prototype.hasOwnProperty.call(SHEETS, key) ? SHEETS[key] : SHEET_DEFAULT;
+  }
+  function choiceLabel(v){
+    if(v==null || v==='') return '';
+    v = Number(v);
+    if(v===-1) return 'ー';
+    if(v>=10) return String.fromCharCode(87+v);
+    return String(v);
+  }
+  // 入力された1文字（全角可）をマークの内部値にする。読み取れなければ null
+  function parseMark(t){
+    var s = String(t==null?'':t).replace(/[０-９Ａ-Ｚａ-ｚ]/g, function(c){ return String.fromCharCode(c.charCodeAt(0)-0xFEE0); }).trim().toLowerCase();
+    if(/^[\-−‐ーｰ―－]$/.test(s)) return -1;
+    if(/^[0-9]$/.test(s)) return Number(s);
+    if(s==='10') return 0; // 旧形式（10番目＝0）の入力
+    if(/^[a-f]$/.test(s)) return s.charCodeAt(0)-87;
+    return null;
+  }
   // 学年度は2月始まり〜翌年1月終わり（例: 2026年度＝2026年2月〜2027年1月）。1月中は前年の学年度として扱う。
   function gakunendoYear(d){
     d = d || new Date();
@@ -648,7 +678,7 @@ const auth = getAuth(fbApp);
     return normalizeDigits(text).split(/[,、，\s]+/).map(function(x){ return x.trim(); }).filter(function(x){ return x!==''; });
   }
   function parseValueList(text){
-    return parseNoList(text).filter(function(x){ return /^\d+$/.test(x); }).map(function(x){ return choiceValue(Number(x)); });
+    return parseNoList(text).map(parseMark).filter(function(v){ return v!=null; });
   }
   function sameMultiset(a, b){
     if(a.length!==b.length) return false;
@@ -675,14 +705,14 @@ const auth = getAuth(fbApp);
   function gradeConditionalGroup(cg, qs, answers){
     function ansOf(no){ var q = findQuestionByNo(qs, no); return q ? { q:q, v:answers[q.id] } : { q:null, v:null }; }
     function pairs(nos){ return nos.map(function(no){ var a = ansOf(no); return { no:String(no), value:(a.v==null?null:a.v) }; }); }
-    function vlist(arr){ return (arr||[]).join('・'); }
+    function vlist(arr){ return (arr||[]).map(choiceLabel).join('・'); }
 
     if(cg.mode==='branch'){
       var trig = ansOf(cg.triggerNo);
       var branches = cg.branches||[];
       var modeLabel = cg.matchMode==='complete' ? '過不足なく一致' : 'それぞれ許容値のいずれか（重複不可）';
       function describe(b){
-        return '問'+cg.triggerNo+'が'+b.when+' → 問'+(b.targets||[]).join('・問')+' が {'+vlist(b.allowed)+'}（'+modeLabel+'）';
+        return '問'+cg.triggerNo+'が'+choiceLabel(b.when)+' → 問'+(b.targets||[]).join('・問')+' が {'+vlist(b.allowed)+'}（'+modeLabel+'）';
       }
       var allText = branches.map(describe).join(' ／ ');
       if(!trig.q) return { correct:false, condText:'トリガー問題（問'+cg.triggerNo+'）が見つかりません', nos:[String(cg.triggerNo)], answerPairs:[] };
@@ -876,7 +906,7 @@ const auth = getAuth(fbApp);
   }
 
   function makeBlankExam(){
-    return { id:uid('exam'), name:'', subject:'', problemUrl:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', defaultChoices:10, sections:[], groups:[], conditionalGroups:[], tags:[] };
+    return { id:uid('exam'), name:'', subject:'', problemUrl:'', explanationUrl:'', year:gakunendoYear(new Date()), status:'draft', sections:[], groups:[], conditionalGroups:[], tags:[] };
   }
 
   // ---- 解答タイマー（模試を開くと自動スタートし、大問ごとにラップを記録する） ----
@@ -953,18 +983,18 @@ const auth = getAuth(fbApp);
   function loadExamForEdit(exam){
     var clone = JSON.parse(JSON.stringify(exam));
     clone.groups = (clone.groups||[]).map(function(g){
-      return { groupId:g.groupId, points:g.points, mode: g.mode==='individual' ? 'individual' : 'combo', combosText:(g.combos||[]).map(function(c){ return c.join(','); }) };
+      return { groupId:g.groupId, points:g.points, mode: g.mode==='individual' ? 'individual' : 'combo', combosText:(g.combos||[]).map(function(c){ return c.map(choiceLabel).join(','); }) };
     });
     clone.conditionalGroups = (clone.conditionalGroups||[]).map(function(cg){
       var isBranch = cg.mode==='branch';
       return {
         id: cg.id || uid('cg'), label: cg.label||'', sectionId: cg.sectionId||'', mode: isBranch ? 'branch' : 'and', points: cg.points,
         allowDuplicates: !!cg.allowDuplicates,
-        andTargets: isBranch ? [{no:'', allowedText:''}] : (cg.targets||[]).map(function(t){ return { no:String(t.no), allowedText:(t.allowed||[]).join(',') }; }),
+        andTargets: isBranch ? [{no:'', allowedText:''}] : (cg.targets||[]).map(function(t){ return { no:String(t.no), allowedText:(t.allowed||[]).map(choiceLabel).join(',') }; }),
         triggerNo: cg.triggerNo!=null ? String(cg.triggerNo) : '',
         matchMode: cg.matchMode==='complete' ? 'complete' : 'multi',
         branches: isBranch ? (cg.branches||[]).map(function(b){
-          return { whenText:String(b.when), targetsText:(b.targets||[]).join(','), allowedText:(b.allowed||[]).join(',') };
+          return { whenText:choiceLabel(b.when), targetsText:(b.targets||[]).join(','), allowedText:(b.allowed||[]).map(choiceLabel).join(',') };
         }) : [{ whenText:'', targetsText:'', allowedText:'' }]
       };
     });
@@ -974,14 +1004,13 @@ const auth = getAuth(fbApp);
         questions:(sec.questions||[]).map(function(q){
           return {
             id:q.id, no:q.no, choices:(q.choices==null?null:q.choices), type:q.type||'normal', points:q.points,
-            answer: q.answer!=null ? q.answer : null,
-            candidatesText: (q.candidates||[]).join(','),
+            answer: q.answer!=null ? choiceLabel(q.answer) : '',
+            candidatesText: (q.candidates||[]).map(choiceLabel).join(','),
             groupId: q.groupId || ''
           };
         })
       };
     });
-    if(clone.defaultChoices==null) clone.defaultChoices = 4;
     if(clone.groups==null) clone.groups = [];
     if(clone.problemUrl==null) clone.problemUrl = '';
     if(clone.explanationUrl==null) clone.explanationUrl = '';
@@ -1003,10 +1032,11 @@ const auth = getAuth(fbApp);
       var pointsRaw = parts[3].trim();
       var choicesRaw = parts[4]!=null ? parts[4].trim() : '';
       if(!section) return null;
-      if(!/^\d+$/.test(no) || !/^\d+$/.test(answer)) return null;
+      var mark = parseMark(answer);
+      if(!/^\d+$/.test(no) || mark==null) return null;
       var points = (pointsRaw==='' || isNaN(Number(pointsRaw))) ? 1 : Number(pointsRaw);
       var choices = (choicesRaw!=='' && /^\d+$/.test(choicesRaw)) ? Number(choicesRaw) : null;
-      return { section:section, no:no, answer:choiceValue(answer), points:points, choices:choices };
+      return { section:section, no:no, answer:mark, points:points, choices:choices };
     }).filter(function(r){ return r!=null; });
   }
 
@@ -1020,9 +1050,10 @@ const auth = getAuth(fbApp);
       var no = parts[0].trim();
       var answer = parts[1].trim();
       var pointsRaw = parts[2]!=null ? parts[2].trim() : '';
-      if(!/^\d+$/.test(no) || !/^\d+$/.test(answer)) return null;
+      var mark = parseMark(answer);
+      if(!/^\d+$/.test(no) || mark==null) return null;
       var points = (pointsRaw==='' || isNaN(Number(pointsRaw))) ? 1 : Number(pointsRaw);
-      return { no:no, answer:choiceValue(answer), points:points };
+      return { no:no, answer:mark, points:points };
     }).filter(function(r){ return r!=null; });
   }
 
@@ -1306,14 +1337,15 @@ const auth = getAuth(fbApp);
     var sectionsHtml = (exam.sections||[]).map(function(sec, si){
       var qsHtml = (sec.questions||[]).map(function(q){
         globalNo++;
-        var n = q.choices || exam.defaultChoices || 4;
+        var sheet = sheetFor(exam.subject);
+        var n = (Number(q.choices)>0) ? Math.min(Number(q.choices), sheet.length) : sheet.length;
         var bubbles = '';
-        for(var i=1;i<=n;i++){
-          var val = choiceValue(i);
+        for(var i=0;i<n;i++){
+          var val = sheet[i];
           var selected = answers[q.id]===val;
-          bubbles += '<button type="button" class="bubble '+(selected?'selected':'')+'" data-action="pickAnswer" data-qid="'+q.id+'" data-num="'+val+'">'+val+'</button>';
+          bubbles += '<button type="button" class="bubble '+(selected?'selected':'')+'" data-action="pickAnswer" data-qid="'+q.id+'" data-num="'+val+'">'+choiceLabel(val)+'</button>';
         }
-        return '<div class="q-row"><div class="q-no">'+globalNo+'</div><div class="bubbles">'+bubbles+'</div></div>';
+        return '<div class="q-row"><div class="q-no">'+globalNo+'</div><div class="bubbles'+(n>10?' dense':'')+'">'+bubbles+'</div></div>';
       }).join('');
       // 大問名は結果画面でのみ表示し、解答画面には出さない。区切りとラップ記録ボタンだけ挟む。
       var divider = si>0 ? '<div class="section-divider"></div>' : '';
@@ -1344,16 +1376,16 @@ const auth = getAuth(fbApp);
   function correctAnswerLabel(exam, q){
     if(q.type==='multi'){
       var c = q.candidates||[];
-      return c.length ? c.join('・') : null;
+      return c.length ? c.map(choiceLabel).join('・') : null;
     }
     if(q.type==='complete' && q.groupId){
       var g = (exam.groups||[]).filter(function(x){ return x.groupId===q.groupId; })[0];
       if(!g) return null;
-      if(g.mode==='individual') return q.answer!=null ? String(q.answer) : null;
+      if(g.mode==='individual') return q.answer!=null ? choiceLabel(q.answer) : null;
       if(!g.combos || !g.combos.length) return null;
-      return g.combos.map(function(c){ return c.join('・'); }).join(' または ');
+      return g.combos.map(function(c){ return c.map(choiceLabel).join('・'); }).join(' または ');
     }
-    return q.answer!=null ? String(q.answer) : null;
+    return q.answer!=null ? choiceLabel(q.answer) : null;
   }
 
   function renderExamResult(){
@@ -1382,14 +1414,14 @@ const auth = getAuth(fbApp);
       if(!r) return '';
       var status = r.correct===true ? '<span class="mark ok">○</span>' : r.correct===false ? '<span class="mark ng">×</span>' : '<span class="mark unknown">―</span>';
       var yourAnsRaw = sub.answers[q.id];
-      var yourAns = yourAnsRaw!=null ? yourAnsRaw : '未回答';
+      var yourAns = yourAnsRaw!=null ? choiceLabel(yourAnsRaw) : '未回答';
       var correctLabel = r.correct===false ? correctAnswerLabel(exam, q) : null;
       var correctAnsHtml = correctLabel!=null ? '<span class="ans">正解: '+esc(correctLabel)+'</span>' : '';
       return '<div class="q-result-row"><span class="qn">'+esc(q.no)+'</span>'+status+'<span class="ya">あなたの解答: '+esc(String(yourAns))+'</span>'+correctAnsHtml+'</div>';
     }).join('');
     var cgRows = (sub.conditionalResults||[]).map(function(c){
       var st = c.correct===true ? '<span class="mark ok">○</span>' : c.correct===false ? '<span class="mark ng">×</span>' : '<span class="mark unknown">―</span>';
-      var ansText = (c.answerPairs||[]).map(function(a){ return '問'+a.no+'='+(a.value==null?'未回答':a.value); }).join('、');
+      var ansText = (c.answerPairs||[]).map(function(a){ return '問'+a.no+'='+(a.value==null?'未回答':choiceLabel(a.value)); }).join('、');
       var detail = esc('あなたの解答: '+ansText);
       if(c.correct!==true && c.condText) detail += '<br>'+esc('条件: '+c.condText);
       return '<div class="cg-result"><div class="cg-head">'+st+'<span class="cg-title">'+esc(c.label)+'</span><span class="cg-pts">+'+c.earned+' / '+c.points+'点</span></div>'
@@ -1566,13 +1598,13 @@ const auth = getAuth(fbApp);
     return ''
       + '<div class="topbar"><button class="btn-link" data-action="cancelEdit">← 戻る</button><h1>模試の編集</h1><button class="btn btn-primary" data-action="saveExam">保存</button></div>'
       + '<label>模試名<input data-field="editingExam.name" value="'+esc(exam.name)+'" placeholder="例: 第1回 全統マーク模試・国語"></label>'
-      + '<label>教科<input data-field="editingExam.subject" value="'+esc(exam.subject)+'" placeholder="例: 国語"></label>'
+      + renderSubjectField(exam)
       + '<label>タグ（成績推移で絞り込みに使います）<input type="text" data-field="editingExam.tagsText" value="'+esc(exam.tagsText||'')+'" placeholder="例: 第2回, 国語, リスニング"></label>'
       + '<p class="hint">タグはカンマまたは読点で区切ります。生徒が提出した結果にもこのタグが引き継がれます。</p>'
       + '<p class="hint">学年度: '+esc(gakunendoLabel(exam.year))+'（作成日から自動判定・変更不可。管理画面の「データ管理」タブで学年度ごとまとめて削除できます）</p>'
       + '<label>問題URL（任意。入力すると解答画面に「問題」というリンクが表示されます）<input type="text" data-field="editingExam.problemUrl" value="'+esc(exam.problemUrl||'')+'" placeholder="例: https://example.com/mondai"></label>'
       + '<label>解説URL（任意。入力すると結果画面に「解説」というリンクが表示されます）<input type="text" data-field="editingExam.explanationUrl" value="'+esc(exam.explanationUrl||'')+'" placeholder="例: https://example.com/kaisetsu"></label>'
-      + '<label>デフォルト選択肢数<input type="number" min="2" max="10" data-field="editingExam.defaultChoices" value="'+exam.defaultChoices+'"></label>'
+      
       + renderJsonImportBox(exam)
       + '<div class="pts-box" id="pointsSummary">'+renderPointsSummaryHtml(exam)+'</div>'
       + '<h2>大問</h2>'
@@ -1592,6 +1624,15 @@ const auth = getAuth(fbApp);
       + cgHtml
       + '<button class="btn btn-secondary" data-action="addCondGroup">＋ 条件付き配点グループを追加</button>'
       + '<div class="pts-bar" id="ptsBar">'+esc(renderPointsBarText(exam))+'</div>';
+  }
+
+  function renderSubjectField(exam){
+    var cur = (exam.subject||'').trim();
+    var opts = '<option value="" '+(cur===''?'selected':'')+'>選択してください</option>'
+      + SUBJECTS.map(function(sj){ return '<option value="'+esc(sj)+'" '+(cur===sj?'selected':'')+'>'+esc(sj)+'</option>'; }).join('');
+    if(cur && SUBJECTS.indexOf(cur)===-1) opts += '<option value="'+esc(cur)+'" selected>'+esc(cur)+'（旧形式・1〜0）</option>';
+    return '<label>教科<select data-field="editingExam.subject" data-rerender="true">'+opts+'</select></label>'
+      + '<p class="hint">この教科のマークシート: '+esc(sheetFor(cur).map(choiceLabel).join(' '))+'</p>';
   }
 
   function renderCondGroupEditor(cg, ci){
@@ -1652,7 +1693,7 @@ const auth = getAuth(fbApp);
   function renderWholeBulkBox(exam){
     return ''
       + '<div class="bulk-paste-whole">'
-      + '<label>大問名もまとめて一括作成（「大問名・番号・解答・配点・選択肢数」の5列。表計算ソフトからのコピペでOK。選択肢数の列は空欄でも構いません（空欄はデフォルト選択肢数を使用）。反映すると今登録されているすべての大問が置き換わります）'
+      + '<label>大問名もまとめて一括作成（「大問名・番号・解答・配点・選択肢数」の5列。表計算ソフトからのコピペでOK。選択肢数の列は空欄でも構いません（空欄は教科のマーク欄をすべて使用）。反映すると今登録されているすべての大問が置き換わります）'
       + '<textarea rows="6" data-field="editingExam.wholeBulkText" placeholder="第1問\t1\t1\t4\t4\n第1問\t2\t2\t4\t4\n第2問\t9\t2\t3\t5">'+esc(exam.wholeBulkText||'')+'</textarea>'
       + '</label>'
       + '<button class="btn btn-secondary" data-action="applyWholeBulk">大問ごとまとめて作成</button>'
@@ -1666,7 +1707,7 @@ const auth = getAuth(fbApp);
       + '<div class="row"><input data-field="editingExam.sections.'+si+'.title" value="'+esc(sec.title)+'" placeholder="大問タイトル 例: 第1問">'
       + '<button class="btn-link danger" data-action="removeSection" data-si="'+si+'">削除</button></div>'
       + '<p class="hint">複数回答にグループIDを設定すると、同じグループ内で同じ選択肢を2回正解として使うことはできなくなります（未設定ならこれまでどおり1問ずつ独立して採点します）。</p>'
-      + '<div class="table-scroll"><table class="q-table"><thead><tr><th>番号</th><th>選択肢数</th><th>種別</th><th>正解/候補/グループID</th><th>配点</th><th></th></tr></thead>'
+      + '<div class="table-scroll"><table class="q-table"><thead><tr><th>番号</th><th>選択肢数（空欄=全部）</th><th>種別</th><th>正解/候補/グループID</th><th>配点</th><th></th></tr></thead>'
       + '<tbody>'+rows+'</tbody></table></div>'
       + '<button class="btn btn-secondary" data-action="addQuestion" data-si="'+si+'">＋ 問題を追加</button>'
       + '<div class="bulk-paste">'
@@ -1689,15 +1730,15 @@ const auth = getAuth(fbApp);
       var grpMode = grp && grp.mode==='individual' ? 'individual' : 'combo';
       answerCell = '<input type="text" placeholder="グループID" data-field="'+prefix+'.groupId" value="'+esc(q.groupId||'')+'">';
       if(grpMode==='individual'){
-        answerCell += '<input type="number" style="margin-top:4px" placeholder="この問題自身の正解" data-field="'+prefix+'.answer" value="'+(q.answer==null?'':q.answer)+'">';
+        answerCell += '<input type="text" style="margin-top:4px" placeholder="この問題自身の正解" data-field="'+prefix+'.answer" value="'+(q.answer==null?'':esc(q.answer))+'">';
       }
     } else {
-      answerCell = '<input type="number" data-field="'+prefix+'.answer" value="'+(q.answer==null?'':q.answer)+'">';
+      answerCell = '<input type="text" style="width:4.2em" placeholder="例: 3 a ー" data-field="'+prefix+'.answer" value="'+(q.answer==null?'':esc(q.answer))+'">';
     }
     return ''
       + '<tr>'
       + '<td><input type="text" style="width:3.2em" data-field="'+prefix+'.no" value="'+esc(q.no)+'"></td>'
-      + '<td><input type="number" style="width:4.2em" placeholder="既定" data-field="'+prefix+'.choices" value="'+(q.choices==null?'':q.choices)+'"></td>'
+      + '<td><input type="number" style="width:4.2em" placeholder="全部" data-field="'+prefix+'.choices" value="'+(q.choices==null?'':q.choices)+'"></td>'
       + '<td><select data-field="'+prefix+'.type" data-rerender="true">'
       + '<option value="normal" '+(q.type==='normal'?'selected':'')+'>通常</option>'
       + '<option value="multi" '+(q.type==='multi'?'selected':'')+'>複数回答</option>'
@@ -1789,7 +1830,18 @@ const auth = getAuth(fbApp);
     if(typeof v==='string'){ var t = normalizeDigits(v).trim(); if(/^-?\d+$/.test(t)) return Number(t); }
     return null;
   }
-  // 配列または "1,4" のような文字列を、選択肢の値（10番目は0）の配列にする。不正な値があれば null
+  function aiMark(v){
+    if(typeof v==='number'){
+      if(!isFinite(v) || Math.floor(v)!==v) return null;
+      if(v===-1) return -1;
+      if(v>=0 && v<=9) return v;
+      if(v===10) return 0;
+      return null;
+    }
+    if(typeof v==='string') return parseMark(v);
+    return null;
+  }
+  // 配列または "1,4" のような文字列を、マークの値の配列にする。不正な値があれば null
   function aiValueList(v){
     var arr;
     if(Array.isArray(v)) arr = v;
@@ -1797,9 +1849,9 @@ const auth = getAuth(fbApp);
     else return null;
     var out = [];
     for(var i=0;i<arr.length;i++){
-      var n = aiToInt(arr[i]);
-      if(n==null || n<0 || n>10) return null;
-      out.push(choiceValue(n));
+      var n = aiMark(arr[i]);
+      if(n==null) return null;
+      out.push(n);
     }
     return out;
   }
@@ -1885,11 +1937,11 @@ const auth = getAuth(fbApp);
         } else {
           var ans = null;
           if(q.answer!=null && q.answer!==''){
-            ans = aiToInt(q.answer);
-            if(ans==null || ans<0 || ans>10){ warnings.push(where+'：answer が 0〜9（10番目は0）の数字ではありません'); ans = null; }
+            ans = aiMark(q.answer);
+            if(ans==null){ warnings.push(where+'：answer が読み取れないマークです'); }
           }
           if(ans==null && type==='normal') warnings.push(where+'：answer（正解）が空です');
-          item.answer = ans==null ? null : choiceValue(ans);
+          item.answer = ans;
           if(type==='complete') item.groupId = gid;
         }
         outSec.questions.push(item);
@@ -1993,11 +2045,11 @@ const auth = getAuth(fbApp);
         if(!Array.isArray(cg.branches) || cg.branches.length===0){ errors.push(name+'：branches（分岐の配列）がありません'); return; }
         var badB = false, branches = [];
         cg.branches.forEach(function(b){
-          var w = aiToInt(b && b.when);
+          var w = aiMark(b && b.when);
           var tg = aiNoList(b && b.targets);
           var al = aiValueList(b && b.allowed);
-          if(w==null || w<0 || w>10 || tg.length===0 || !al || al.length===0){ badB = true; return; }
-          branches.push({ when:choiceValue(w), targets:tg, allowed:al });
+          if(w==null || tg.length===0 || !al || al.length===0){ badB = true; return; }
+          branches.push({ when:w, targets:tg, allowed:al });
         });
         if(badB){ errors.push(name+'：branches の when / targets / allowed が読み取れない分岐があります'); return; }
         out.branches = branches;
@@ -2014,10 +2066,10 @@ const auth = getAuth(fbApp);
     var base = {
       id: cur.id,
       name: parsed.exam.name || (cur.name||'').trim(),
-      subject: parsed.exam.subject || (cur.subject||'').trim(),
+      subject: (SUBJECTS.indexOf(parsed.exam.subject)!==-1 ? parsed.exam.subject : (cur.subject||'').trim()),
       tags: parsed.exam.tags.length ? parsed.exam.tags : curTags,
       problemUrl: cur.problemUrl||'', explanationUrl: cur.explanationUrl||'',
-      year: cur.year, status: cur.status||'draft', defaultChoices: cur.defaultChoices,
+      year: cur.year, status: cur.status||'draft',
       sections: parsed.exam.sections, groups: parsed.exam.groups, conditionalGroups: parsed.exam.conditionalGroups
     };
     return loadExamForEdit(base);
@@ -2025,7 +2077,7 @@ const auth = getAuth(fbApp);
 
   // AIに渡すプロンプト。アプリの採点ルールをそのまま説明してある。
   function buildAiPrompt(exam){
-    var dc = Number(exam && exam.defaultChoices) || 10;
+    var subj = SUBJECTS.join(' / ');
     return [
       'あなたはマークシート模試の採点データを作るアシスタントです。',
       '添付した画像（正解一覧・配点表・採点基準・解答上の注意書きなど）を読み取り、下記の仕様に従ったJSONを1つだけ出力してください。',
@@ -2033,14 +2085,14 @@ const auth = getAuth(fbApp);
       '【出力ルール】',
       '- 出力はJSONのみ（```json のコードブロックで囲んでよい）。前置きや解説の文章は書かない。',
       '- 読み取れない・判断に迷う箇所は推測で埋めず、その値を null にして、理由を notes に書く。',
-      '- マーク番号の値は 1〜9 はそのまま、10番目の選択肢は「0」と書く（10 ではなく 0）。answer・candidates・combos・allowed・when すべて同じ。',
+      '- マークの値は、解答用紙に印字されている文字をそのまま文字列で書く（例: "3"、"0"、"a"、"ー"）。数学のマイナス欄は "ー"、英字は小文字 "a"〜"f"。answer・candidates・combos・allowed・when すべて同じ。',
       '- no（問題番号）は文字列。模試全体で重複させない。大問ごとに1から振り直されている場合は通し番号にして、その旨を notes に書く。',
       '- groupId は半角英数字の任意の文字列（例: g21, m9）。同じ組の問題には同じIDを付け、組ごとに違うIDにする。',
       '',
       '【全体の形】',
       '{',
       '  "name": "模試名（読み取れなければ空文字）",',
-      '  "subject": "教科",',
+      '  "subject": "'+subj+' のいずれか（判断できなければ空文字）",',
       '  "tags": ["第1回", "国語"],',
       '  "sections": [ { "title": "第1問", "questions": [ 問題, ... ] } ],',
       '  "groups": [ 完全解答グループ, ... ],',
@@ -2057,7 +2109,7 @@ const auth = getAuth(fbApp);
       '3) complete（完全解答）: 複数の解答欄がすべて合って初めて得点になる問題。points は問題側ではなく groups 側に書く（問題側は 0 にする）。同じ組の問題には同じ groupId を付ける。',
       '   {"no":"21","type":"complete","groupId":"g21","points":0}',
       '',
-      'choices はその問題のマーク欄の選択肢数。画像から分かるなら必ず書く（このアプリの既定は '+dc+' 個で、既定と同じなら null でもよい）。',
+      'choices は基本的に null でよい。教科ごとのマーク欄（数学: ー,0〜9 ／ 英国社: 1〜9 ／ 理科: 1〜9,0,a,b ／ 情報: 0〜9,a〜f）がアプリ側で自動的に使われる。マーク欄がそれより少ない問題だけ、先頭から数えた個数を書く。',
       '',
       '【完全解答グループ groups】',
       '- 組み合わせが順不同で判定される場合は mode を "combo" にして、正解の組み合わせを combos に書く。並べ替えは自動で同一視されるので、並び替えを全部書く必要はない。別の組み合わせも正解になる場合だけ複数書く。',
@@ -2111,6 +2163,7 @@ const auth = getAuth(fbApp);
   // 保存用の模試データを組み立てて検証する。戻り値: { exam } または { error }
   function buildFinalExam(src){
     if(!src.name || !src.name.trim()){ return { error:'模試名を入力してください' }; }
+    if(!src.subject || !String(src.subject).trim()){ return { error:'教科を選択してください' }; }
     var finalized = {
       id: src.id,
       name: src.name.trim(),
@@ -2120,7 +2173,7 @@ const auth = getAuth(fbApp);
       explanationUrl: (src.explanationUrl||'').trim(),
       year: src.year,
       status: src.status||'draft',
-      defaultChoices: Number(src.defaultChoices)||10,
+      
       sections: (src.sections||[]).map(function(sec){
         return {
           id: sec.id,
@@ -2133,10 +2186,10 @@ const auth = getAuth(fbApp);
               points: Number(q.points)||0
             };
             if(base.type==='multi'){
-              base.candidates = (q.candidatesText||'').split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s!==''; }).map(Number).map(choiceValue);
+              base.candidates = parseValueList(q.candidatesText);
               base.groupId = (q.groupId||'').trim();
             } else {
-              base.answer = (q.answer===''||q.answer==null) ? null : choiceValue(q.answer);
+              base.answer = parseMark(q.answer);
               if(base.type==='complete'){ base.groupId = (q.groupId||'').trim(); }
             }
             return base;
@@ -2150,7 +2203,7 @@ const auth = getAuth(fbApp);
           points: Number(g.points)||0,
           mode: mode,
           combos: mode==='combo' ? (g.combosText||[]).map(function(t){
-            return t.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s!==''; }).map(Number).map(choiceValue);
+            return parseValueList(t);
           }).filter(function(arr){ return arr.length>0; }) : []
         };
       }).filter(function(g){ return g.groupId; })
@@ -2445,7 +2498,7 @@ const auth = getAuth(fbApp);
           sectionMap[r.section] = { id:uid('sec'), title:r.section, questions:[], bulkText:'' };
           sectionOrder.push(r.section);
         }
-        sectionMap[r.section].questions.push({ id:uid('q'), no:r.no, choices:r.choices, type:'normal', points:r.points, answer:r.answer, candidatesText:'', groupId:'' });
+        sectionMap[r.section].questions.push({ id:uid('q'), no:r.no, choices:r.choices, type:'normal', points:r.points, answer:choiceLabel(r.answer), candidatesText:'', groupId:'' });
       });
       var newSections = sectionOrder.map(function(name){ return sectionMap[name]; });
       openConfirm({
@@ -2471,7 +2524,7 @@ const auth = getAuth(fbApp);
         danger:true,
         onConfirm:function(){
           sec.questions = rows.map(function(r){
-            return { id:uid('q'), no:r.no, choices:null, type:'normal', points:r.points, answer:r.answer, candidatesText:'', groupId:'' };
+            return { id:uid('q'), no:r.no, choices:null, type:'normal', points:r.points, answer:choiceLabel(r.answer), candidatesText:'', groupId:'' };
           });
           render();
         }
@@ -2506,7 +2559,7 @@ const auth = getAuth(fbApp);
       if(parsed.errors.length){ ex.importErrors = parsed.errors; render(); return; }
       var cand = buildImportCandidate(parsed, ex);
       // 保存時と同じ検証（条件付き配点の対象問題が実在するか等）にかける。模試名が空でも取り込みは止めない
-      var chk = buildFinalExam(Object.assign({}, cand, { name:(cand.name||'').trim() || '（仮）' }));
+      var chk = buildFinalExam(Object.assign({}, cand, { name:(cand.name||'').trim() || '（仮）', subject:(cand.subject||'').trim() || '（仮）' }));
       if(chk.error){ ex.importErrors = [chk.error]; render(); return; }
       var sm = computePointsSummary(cand);
       var nQ = 0;
@@ -2527,7 +2580,7 @@ const auth = getAuth(fbApp);
           cur.groups = cand.groups;
           cur.conditionalGroups = cand.conditionalGroups;
           if(parsed.exam.name) cur.name = parsed.exam.name;
-          if(parsed.exam.subject) cur.subject = parsed.exam.subject;
+          if(SUBJECTS.indexOf(parsed.exam.subject)!==-1) cur.subject = parsed.exam.subject;
           if(parsed.exam.tags.length) cur.tagsText = parsed.exam.tags.join('、');
           cur.jsonText = '';
           cur.importErrors = null;
