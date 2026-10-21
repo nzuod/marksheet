@@ -157,6 +157,21 @@ input:focus, select:focus, textarea:focus, button:focus-visible{ outline:2px sol
 
 .timer-clock{ font-family:var(--font-display); font-size:2.3rem; font-weight:700; text-align:center; letter-spacing:.03em; margin:8px 0 14px; font-variant-numeric:tabular-nums; }
 
+.dash-wrap{ overflow-x:auto; margin-top:12px; border:1px solid var(--line); border-radius:var(--radius-s); }
+.dash-table{ border-collapse:separate; border-spacing:0; font-size:0.82rem; min-width:100%; }
+.dash-table th, .dash-table td{ padding:7px 10px; border-bottom:1px solid var(--line); border-right:1px solid var(--line); text-align:right; white-space:nowrap; background:var(--surface); }
+.dash-table thead th{ text-align:center; font-weight:700; vertical-align:bottom; white-space:normal; min-width:84px; max-width:120px; }
+.dash-table .dash-name{ display:block; font-weight:400; color:var(--ink-soft); font-size:0.75rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:110px; margin:0 auto; }
+.dash-table tbody th{ text-align:left; font-weight:700; }
+.dash-table .dash-sticky{ position:sticky; left:0; z-index:1; background:var(--surface-2, var(--surface)); }
+.dash-table thead .dash-sticky{ z-index:2; }
+.dash-table .dash-agg{ background:var(--blue-soft); }
+.dash-table .dash-empty{ color:var(--ink-soft); }
+.heat-table td.heat-cell{ text-align:center; font-variant-numeric:tabular-nums; min-width:64px; }
+.heat-table tr.heat-avg th, .heat-table tr.heat-avg td{ border-top:2px solid var(--line); font-weight:700; }
+.heat-legend{ display:flex; align-items:center; gap:8px; margin-top:10px; font-size:0.76rem; color:var(--ink-soft); }
+.heat-bar{ display:inline-block; width:140px; height:10px; border-radius:5px; border:1px solid var(--line); background-color:var(--surface); background-image:linear-gradient(90deg, rgba(185,77,61,.45), rgba(217,174,92,.45), rgba(63,143,107,.45)); }
+.dash-note{ font-size:0.82rem; color:var(--warn); background:var(--warn-soft); border-radius:var(--radius-s); padding:8px 10px; margin-top:10px; line-height:1.6; }
 .chart-wrap{ height:200px; margin-top:12px; position:relative; }
 .chart-wrap canvas{ width:100%; height:100%; display:block; }
 .chart-legend{ display:flex; gap:12px; flex-wrap:wrap; font-size:0.76rem; color:var(--ink-soft); margin-top:8px; }
@@ -302,10 +317,13 @@ const auth = getAuth(fbApp);
   }
   // ---- 教科ごとのマークシート ----
   // マークの内部値: 0〜9 は数字そのまま、a〜f は 10〜15、「ー」（マイナス）は -1。
-  var SUBJECTS = ['数学','英国社','理科','情報'];
+  var SUBJECTS = ['英語','国語','社会','数学','理科','情報'];
   var SHEETS = {
     '数学':   [-1,0,1,2,3,4,5,6,7,8,9],
-    '英国社': [1,2,3,4,5,6,7,8,9],
+    '英語':   [1,2,3,4,5,6,7,8,9],
+    '国語':   [1,2,3,4,5,6,7,8,9],
+    '社会':   [1,2,3,4,5,6,7,8,9],
+    '英国社': [1,2,3,4,5,6,7,8,9], // 旧形式の模試用
     '理科':   [1,2,3,4,5,6,7,8,9,0,10,11],
     '情報':   [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
   };
@@ -559,7 +577,7 @@ const auth = getAuth(fbApp);
   function computePointsSummary(exam){
     var sections = exam.sections||[];
     var rows = sections.map(function(sec, si){
-      return { id:sec.id, title:(sec.title||'').trim() || ('大問'+(si+1)), n:(sec.questions||[]).length, q:0, grp:0, cond:0 };
+      return { id:sec.id, title:(sec.title||'').trim() || ('第'+(si+1)+'問'), n:(sec.questions||[]).length, q:0, grp:0, cond:0 };
     });
     var rowById = {};
     rows.forEach(function(r){ rowById[r.id] = r; });
@@ -587,7 +605,7 @@ const auth = getAuth(fbApp);
       });
     });
     sections.forEach(function(sec, si){
-      if(!(sec.title||'').trim()) warnings.push('大問'+(si+1)+'番目：タイトルが空です（結果画面では「大問'+(si+1)+'」と表示されます）');
+      if(!(sec.title||'').trim()) warnings.push('大問'+(si+1)+'番目：タイトルが空です（結果画面では「第'+(si+1)+'問」と表示されます）');
     });
     Object.keys(groupMap).forEach(function(gid){
       if(!counted[gid]) warnings.push('完全解答グループ「'+gid+'」（'+(Number(groupMap[gid].points)||0)+'点）は、どの問題からも使われていないため加算されません');
@@ -878,7 +896,7 @@ const auth = getAuth(fbApp);
     });
 
     var sectionAgg = {};
-    (exam.sections||[]).forEach(function(sec, si){ sectionAgg[sec.id] = {title:((sec.title||'').trim() || ('大問'+(si+1))), earned:0, max:0}; });
+    (exam.sections||[]).forEach(function(sec, si){ sectionAgg[sec.id] = {title:((sec.title||'').trim() || ('第'+(si+1)+'問')), earned:0, max:0}; });
     var countedGroups = {};
     qs.forEach(function(q){
       var r = perQuestion[q.id];
@@ -935,7 +953,9 @@ const auth = getAuth(fbApp);
   // scope は 'exam' | 'past' | 'trend'。画面ごとに検索文字・選択タグ・パネルの開閉を別々に持つ。
   // 検索欄の文字は「タイトルまたはタグのどれかに部分一致」、選択したタグは「すべて持っていること（AND）」で判定する。
   function matchesFilter(scope, name, tags){
-    var f = state.filters[scope];
+    return matchesFilterWith(state.filters[scope], name, tags);
+  }
+  function matchesFilterWith(f, name, tags){
     var q = (f.text||'').trim().toLowerCase();
     tags = tags||[];
     if((f.tags||[]).some(function(t){ return tags.indexOf(t)===-1; })) return false;
@@ -1081,11 +1101,16 @@ const auth = getAuth(fbApp);
     usageDau:'', usageOpens:3, usageAdminOpens:5,
     examTimer:null, examTimerExamId:null,
     trendMetric:'rate',
+    trendMode:'chart',
+    dash:{ applied:null, metrics:{ score:true, max:true, rate:true, time:true, sections:false } },
+    heat:{ applied:null },
     // 検索・タグ絞り込みの状態。模試一覧／過去の結果／成績推移でそれぞれ別々に持つ
     filters:{
       exam:{ text:'', tags:[], open:false },
       past:{ text:'', tags:[], open:false },
-      trend:{ text:'', tags:[], open:false }
+      trend:{ text:'', tags:[], open:false },
+      dash:{ text:'', tags:[], open:false },
+      heat:{ text:'', tags:[], open:false }
     },
     modal:null, toast:null
   };
@@ -1208,7 +1233,15 @@ const auth = getAuth(fbApp);
 
   // ---- render: 成績推移（過去の結果をタグで絞り込み、得点率・所要時間・大問別得点率を表示） ----
   function renderTrendTab(){
-    return ''
+    var mode = (state.trendMode==='dashboard' || state.trendMode==='heatmap') ? state.trendMode : 'chart';
+    var switcher = '<div style="margin-bottom:8px">'
+      + '<button type="button" class="tag-pick '+(mode==='chart'?'on':'')+'" data-action="setTrendMode" data-mode="chart">推移グラフ</button>'
+      + '<button type="button" class="tag-pick '+(mode==='dashboard'?'on':'')+'" data-action="setTrendMode" data-mode="dashboard">ダッシュボード</button>'
+      + '<button type="button" class="tag-pick '+(mode==='heatmap'?'on':'')+'" data-action="setTrendMode" data-mode="heatmap">大問別分析</button>'
+      + '</div>';
+    if(mode==='dashboard') return switcher + renderDashboard();
+    if(mode==='heatmap') return switcher + renderHeatmap();
+    return switcher
       + '<p class="hint">タイトル・タグで絞り込み、得点率・所要時間・大問別得点率の推移を表示します。</p>'
       + renderFilterBar('trend', myAllSubs().map(function(s){ return s.examTags; }))
       + '<label>表示するデータ<select data-field="trendMetric" data-rerender="true">'
@@ -1218,6 +1251,244 @@ const auth = getAuth(fbApp);
       + '</select></label>'
       + '<div class="chart-wrap"><canvas id="trendChart"></canvas></div>'
       + '<div class="chart-legend" id="trendLegend"></div>';
+  }
+
+  // ---- ダッシュボード（模試を絞り込んで「表示」→ 表示後に指標を切り替える） ----
+  // 提出データに教科が無い古い記録は、模試側の教科で補う
+  function subSubject(sub){
+    if(sub.subject) return sub.subject;
+    var ex = getExams().filter(function(e){ return e.id===sub.examId; })[0];
+    return ex ? (ex.subject||'') : '';
+  }
+  function dashFilterIsEmpty(){
+    var f = state.filters.dash;
+    return !((f.text||'').trim()) && !((f.tags||[]).length);
+  }
+  function dashIsStale(){
+    var a = state.dash.applied, f = state.filters.dash;
+    if(!a) return false;
+    var t = (f.text||'').trim();
+    var tags = (f.tags||[]).slice().sort().join('\u0001');
+    return a.text!==t || a.tags.slice().sort().join('\u0001')!==tags;
+  }
+  function dashSubs(){
+    var a = state.dash.applied;
+    if(!a) return [];
+    return myAllSubs().filter(function(s){ return matchesFilterWith(a, s.examName, s.examTags); })
+      .sort(function(x,y){ return (x.submittedAt||0)-(y.submittedAt||0); });
+  }
+  function pct1(x){ return (Math.round(x*10)/10)+'%'; }
+  function num1(x){ return String(Math.round(x*10)/10); }
+  function dashControlsHtml(){
+    var empty = dashFilterIsEmpty();
+    return '<button class="btn btn-primary" id="dashApplyBtn" data-action="applyDash"'+(empty?' disabled':'')+'>表示</button>'
+      + '<p class="hint" id="dashStale" style="margin:6px 0 0">'
+      + (empty ? '模試を絞り込んでから「表示」を押してください（検索文字かタグのどちらかが必要です）。'
+               : (dashIsStale() ? '絞り込み条件が変わりました。「表示」を押すと表が更新されます。' : ''))
+      + '</p>';
+  }
+  function refreshDashControls(){
+    var btn = document.getElementById('dashApplyBtn'), note = document.getElementById('dashStale');
+    if(!btn || !note) return;
+    var empty = dashFilterIsEmpty();
+    btn.disabled = empty;
+    note.textContent = empty ? '模試を絞り込んでから「表示」を押してください（検索文字かタグのどちらかが必要です）。'
+      : (dashIsStale() ? '絞り込み条件が変わりました。「表示」を押すと表が更新されます。' : '');
+  }
+  function renderDashboard(){
+    var head = renderFilterBar('dash', myAllSubs().map(function(s){ return s.examTags; })) + dashControlsHtml();
+    if(!state.dash.applied) return head;
+    var list = dashSubs();
+    if(list.length===0) return head + '<p class="hint" style="margin-top:14px">該当する模試がありません。</p>';
+
+    var m = state.dash.metrics;
+    var chips = [['score','得点'],['max','満点'],['rate','得点率'],['time','所要時間'],['sections','大問別']].map(function(x){
+      return '<button type="button" class="tag-pick '+(m[x[0]]?'on':'')+'" data-action="toggleDashMetric" data-metric="'+x[0]+'">'+x[1]+'</button>';
+    }).join('');
+
+    var exById = {};
+    getExams().forEach(function(e){ exById[e.id] = e; });
+    var rates = list.map(function(s){ return s.max>0 ? s.total/s.max*100 : null; });
+    var secs = list.map(function(s){ return orderedSectionAgg(s, exById[s.examId]).map(function(ent){ return ent.data; }); });
+    var n = list.length;
+    function sum(arr){ return arr.reduce(function(a,b){ return a+b; }, 0); }
+    function present(arr){ return arr.filter(function(v){ return v!=null; }); }
+    function avgOf(arr){ var p = present(arr); return p.length ? sum(p)/p.length : null; }
+
+    var subjects = []; list.forEach(function(s){ var sj = subSubject(s); if(sj && subjects.indexOf(sj)===-1) subjects.push(sj); });
+    var secCounts = secs.map(function(a){ return a.length; });
+    var maxSec = Math.max.apply(null, secCounts.concat([0]));
+    var mixedSec = secCounts.some(function(c){ return c!==secCounts[0]; });
+
+    var rows = [];
+    function row(label, cells, total, avg, title){
+      rows.push('<tr><th class="dash-sticky" scope="row"'+(title?' title="'+esc(title)+'"':'')+'>'+esc(label)+'</th>'
+        + cells.map(function(c){ return '<td'+(c==null||c==='—'?' class="dash-empty"':'')+'>'+(c==null?'':esc(c))+'</td>'; }).join('')
+        + '<td class="dash-agg'+(total==null||total==='—'?' dash-empty':'')+'">'+esc(total==null?'—':total)+'</td>'
+        + '<td class="dash-agg'+(avg==null||avg==='—'?' dash-empty':'')+'">'+esc(avg==null?'—':avg)+'</td></tr>');
+    }
+    if(m.score) row('得点', list.map(function(s){ return String(s.total); }), num1(sum(list.map(function(s){ return s.total; }))), num1(sum(list.map(function(s){ return s.total; }))/n));
+    if(m.max)   row('満点', list.map(function(s){ return String(s.max); }), num1(sum(list.map(function(s){ return s.max; }))), num1(sum(list.map(function(s){ return s.max; }))/n));
+    if(m.rate){
+      var ar = avgOf(rates);
+      row('得点率', rates.map(function(r){ return r==null ? '—' : pct1(r); }), '—', ar==null ? '—' : pct1(ar));
+    }
+    if(m.time){
+      var ts = list.map(function(s){ return s.elapsedMs!=null ? s.elapsedMs : null; });
+      var at = avgOf(ts);
+      row('所要時間', ts.map(function(t){ return t==null ? '—' : formatDuration(t); }), '—', at==null ? '—' : formatDuration(at));
+    }
+    if(m.sections){
+      for(var i=0;i<maxSec;i++){
+        var cellR = [], es = 0, ms = 0, rs = [], titles = [];
+        secs.forEach(function(arr){
+          var d = arr[i];
+          if(!d){ cellR.push(null); return; }
+          if(d.title && titles.indexOf(d.title)===-1) titles.push(d.title);
+          var e = Number(d.earned)||0, mx = Number(d.max)||0;
+          es += e; ms += mx;
+          var r = mx>0 ? e/mx*100 : null;
+          if(r!=null) rs.push(r);
+          cellR.push(e+'/'+mx+(r!=null ? '（'+pct1(r)+'）' : ''));
+        });
+        row('第'+(i+1)+'問', cellR, es+'/'+ms, rs.length ? pct1(sum(rs)/rs.length) : '—', titles.join(' / '));
+      }
+    }
+
+    var thead = '<tr><th class="dash-sticky" scope="col"></th>'
+      + list.map(function(s){
+          var sj = subSubject(s);
+          return '<th scope="col" title="'+esc(s.examName||'')+'">'+esc(shortDate(s.submittedAt))
+            + '<span class="dash-name">'+esc(s.examName||'')+'</span>'
+            + (sj ? '<span class="dash-name">'+esc(sj)+'</span>' : '')+'</th>';
+        }).join('')
+      + '<th scope="col" class="dash-agg">合計</th><th scope="col" class="dash-agg">平均</th></tr>';
+
+    var notes = '';
+    if(subjects.length>1) notes += '<div class="dash-note">教科が混在しています（'+esc(subjects.join('・'))+'）。合計は参考値として見てください。</div>';
+    if(m.sections && mixedSec) notes += '<div class="dash-note">大問数が異なる模試が含まれています。大問別は先頭からの順番（第n問）でそろえて表示し、存在しない大問は空欄です。</div>';
+
+    return head
+      + '<p style="margin:14px 0 4px"><b>模試件数 '+n+'</b></p>'
+      + '<div>'+chips+'</div>'
+      + notes
+      + (rows.length ? '<div class="dash-wrap"><table class="dash-table"><thead>'+thead+'</thead><tbody>'+rows.join('')+'</tbody></table></div>'
+                     : '<p class="hint" style="margin-top:12px">表示する指標を選んでください。</p>');
+  }
+
+  // ---- 大問別分析：ヒートマップ（行：模試、列：大問の順番、セル：得点率の色） ----
+  // 大問は名前ではなく順番（第n問）でそろえる。色は教科を問わず共通の基準（0%＝赤、50%＝黄、100%＝緑）。
+  var HEAT_STOPS = [[0,185,77,61],[50,217,174,92],[100,63,143,107]];
+  function heatRgba(rate, alpha){
+    var r = Math.max(0, Math.min(100, rate));
+    for(var i=1;i<HEAT_STOPS.length;i++){
+      var a = HEAT_STOPS[i-1], b = HEAT_STOPS[i];
+      if(r<=b[0]){
+        var t = (r-a[0])/(b[0]-a[0]);
+        var c = [1,2,3].map(function(k){ return Math.round(a[k]+(b[k]-a[k])*t); });
+        return 'rgba('+c[0]+','+c[1]+','+c[2]+','+alpha+')';
+      }
+    }
+    return 'rgba(63,143,107,'+alpha+')';
+  }
+  // 背景色は上塗り（グラデーション）にして、ライト／ダークどちらでも下地の色を活かす
+  function heatCellStyle(rate){
+    if(rate==null) return '';
+    var c = heatRgba(rate, 0.45);
+    return ' style="background-image:linear-gradient('+c+','+c+')"';
+  }
+  function heatFilterIsEmpty(){
+    var f = state.filters.heat;
+    return !((f.text||'').trim()) && !((f.tags||[]).length);
+  }
+  function heatIsStale(){
+    var a = state.heat.applied, f = state.filters.heat;
+    if(!a) return false;
+    var t = (f.text||'').trim();
+    return a.text!==t || a.tags.slice().sort().join('\u0001')!==(f.tags||[]).slice().sort().join('\u0001');
+  }
+  function heatSubs(){
+    var a = state.heat.applied;
+    if(!a) return [];
+    return myAllSubs().filter(function(s){ return matchesFilterWith(a, s.examName, s.examTags); })
+      .sort(function(x,y){ return (x.submittedAt||0)-(y.submittedAt||0); });
+  }
+  function heatNoteText(){
+    return heatFilterIsEmpty() ? '模試を絞り込んでから「表示」を押してください（検索文字かタグのどちらかが必要です）。同じ入試形式の模試・過去問に絞ると比べやすくなります。'
+      : (heatIsStale() ? '絞り込み条件が変わりました。「表示」を押すと表が更新されます。' : '');
+  }
+  function heatControlsHtml(){
+    return '<button class="btn btn-primary" id="heatApplyBtn" data-action="applyHeat"'+(heatFilterIsEmpty()?' disabled':'')+'>表示</button>'
+      + '<p class="hint" id="heatStale" style="margin:6px 0 0">'+heatNoteText()+'</p>';
+  }
+  function refreshHeatControls(){
+    var btn = document.getElementById('heatApplyBtn'), note = document.getElementById('heatStale');
+    if(!btn || !note) return;
+    btn.disabled = heatFilterIsEmpty();
+    note.textContent = heatNoteText();
+  }
+  function renderHeatmap(){
+    var head = '<p class="hint">同じ入試形式の模試・過去問をタグで絞り込み、大問（第n問）ごとの得点率を色で比べます。</p>'
+      + renderFilterBar('heat', myAllSubs().map(function(s){ return s.examTags; })) + heatControlsHtml();
+    if(!state.heat.applied) return head;
+    var list = heatSubs();
+    if(list.length===0) return head + '<p class="hint" style="margin-top:14px">該当する模試がありません。</p>';
+
+    var exById = {};
+    getExams().forEach(function(e){ exById[e.id] = e; });
+    var ents = list.map(function(s){ return orderedSectionAgg(s, exById[s.examId]); });
+    var secs = ents.map(function(a){ return a.map(function(ent){ return ent.data; }); });
+    var counts = secs.map(function(a){ return a.length; });
+    var maxSec = Math.max.apply(null, counts.concat([0]));
+    var mixedSec = counts.some(function(c){ return c!==counts[0]; });
+    var orderUnknown = ents.some(function(a){ return a.length>0 && !a.orderKnown; });
+    var subjects = []; list.forEach(function(s){ var sj = subSubject(s); if(sj && subjects.indexOf(sj)===-1) subjects.push(sj); });
+
+    function rateOf(d){ var mx = Number(d.max)||0; return mx>0 ? (Number(d.earned)||0)/mx*100 : null; }
+    function pct0(r){ return Math.round(r)+'%'; }
+    function cell(r, tip){
+      if(r==null) return '<td class="dash-empty heat-cell">'+(tip===undefined ? '' : '—')+'</td>';
+      return '<td class="heat-cell"'+heatCellStyle(r)+(tip?' title="'+esc(tip)+'"':'')+'>'+pct0(r)+'</td>';
+    }
+    function avgOf(arr){ var p = arr.filter(function(v){ return v!=null; }); return p.length ? p.reduce(function(a,b){ return a+b; },0)/p.length : null; }
+
+    var colRates = []; for(var j=0;j<maxSec;j++) colRates.push([]);
+    var totalRates = [];
+    var body = list.map(function(s, i){
+      var sj = subSubject(s);
+      var tds = '';
+      for(var k=0;k<maxSec;k++){
+        var d = secs[i][k];
+        if(!d){ tds += '<td class="dash-empty heat-cell"></td>'; continue; }
+        var r = rateOf(d);
+        if(r!=null) colRates[k].push(r);
+        tds += cell(r, '第'+(k+1)+'問'+(d.title ? '（'+d.title+'）' : '')+'：'+(Number(d.earned)||0)+'/'+(Number(d.max)||0)+'点', true);
+      }
+      var tr = s.max>0 ? s.total/s.max*100 : null;
+      if(tr!=null) totalRates.push(tr);
+      tds += cell(tr, '全体：'+s.total+'/'+s.max+'点');
+      return '<tr><th class="dash-sticky" scope="row" title="'+esc(s.examName||'')+'">'+esc(shortDate(s.submittedAt))
+        + '<span class="dash-name">'+esc(s.examName||'')+'</span>'
+        + (sj ? '<span class="dash-name">'+esc(sj)+'</span>' : '')+'</th>'+tds+'</tr>';
+    }).join('');
+
+    var avgTds = colRates.map(function(arr){ var a = avgOf(arr); return cell(a); }).join('') + cell(avgOf(totalRates));
+    var thead = '<tr><th class="dash-sticky" scope="col"></th>';
+    for(var c=0;c<maxSec;c++) thead += '<th scope="col">第'+(c+1)+'問</th>';
+    thead += '<th scope="col" class="dash-agg">全体</th></tr>';
+
+    var notes = '';
+    if(subjects.length>1) notes += '<div class="dash-note">教科が混在しています（'+esc(subjects.join('・'))+'）。色は教科を問わず同じ基準です。</div>';
+    if(mixedSec) notes += '<div class="dash-note">構成が異なる試験が含まれています。大問は先頭からの順番（第n問）でそろえて表示し、存在しない大問は空欄です。</div>';
+    if(orderUnknown) notes += '<div class="dash-note">大問の順番を確認できない結果が含まれています。その行の列の並びは参考値です。</div>';
+
+    return head
+      + '<p style="margin:14px 0 4px"><b>模試件数 '+list.length+'</b></p>'
+      + notes
+      + (maxSec===0 ? '<p class="hint" style="margin-top:12px">大問別の得点が保存された結果がありません。</p>'
+        : '<div class="dash-wrap"><table class="dash-table heat-table"><thead>'+thead+'</thead><tbody>'+body
+          + '<tr class="heat-avg"><th class="dash-sticky" scope="row">平均得点率</th>'+avgTds+'</tr></tbody></table></div>'
+          + '<div class="heat-legend"><span>0%</span><span class="heat-bar"></span><span>100%</span><span>（セルの数字は得点率。色は補助です）</span></div>');
   }
 
   // キャンバスに手描きで折れ線グラフを描く（得点率・所要時間・大問別得点率）
@@ -1401,7 +1672,7 @@ const auth = getAuth(fbApp);
       var sid = ent.id, s = ent.data;
       var pct = s.max>0 ? Math.round(s.earned/s.max*1000)/10 : 0;
       var lap = lapsById[sid];
-      var secTitle = (s.title||'').trim() || (secList.orderKnown ? '大問'+(idx+1) : '（名称未設定）');
+      var secTitle = (s.title||'').trim() || (secList.orderKnown ? '第'+(idx+1)+'問' : '（名称未設定）');
       return '<div class="result-row"><span>'+esc(secTitle)+'</span><span>'+s.earned+' / '+s.max+'点（'+pct+'%）</span>'+(lap?'<span>'+formatDuration(lap.lapMs)+'</span>':'')+'</div>';
     }).join('');
     // 大問別の合計が総合点と合わないとき（古い形式で保存された結果など）は、差分を隠さず別行で見せる
@@ -1679,7 +1950,7 @@ const auth = getAuth(fbApp);
       + '<label>配点を計上する大問<select data-field="'+base+'.sectionId" data-rerender="true">'
       + '<option value="" '+(!cg.sectionId?'selected':'')+'>自動（最初の対象問題がある大問）</option>'
       + (state.editingExam.sections||[]).map(function(sec, si){
-          return '<option value="'+esc(sec.id)+'" '+(cg.sectionId===sec.id?'selected':'')+'>'+esc((sec.title||'').trim() || ('大問'+(si+1)))+'</option>';
+          return '<option value="'+esc(sec.id)+'" '+(cg.sectionId===sec.id?'selected':'')+'>'+esc((sec.title||'').trim() || ('第'+(si+1)+'問'))+'</option>';
         }).join('')
       + '</select></label>'
       + '<label>モード<select data-field="'+base+'.mode" data-rerender="true">'
@@ -1810,7 +2081,7 @@ const auth = getAuth(fbApp);
     var elapsedMs = examTimerElapsedMs();
     var laps = (state.examTimer && state.examTimer.laps) ? state.examTimer.laps.slice() : [];
     var sub = {
-      id: uid('sub'), examId: exam.id, examName: exam.name, examTags: (exam.tags||[]).slice(), studentKey: state.user.key,
+      id: uid('sub'), examId: exam.id, examName: exam.name, subject: (exam.subject||'').trim(), examTags: (exam.tags||[]).slice(), studentKey: state.user.key,
       submittedAt: Date.now(), total: result.total, max: result.max,
       perQuestion: result.perQuestion, sectionAgg: result.sectionAgg, sectionAggVersion: result.sectionAggVersion, sectionOrder: result.sectionOrder, conditionalResults: result.conditionalResults,
       answers: Object.assign({}, state.currentAnswers),
@@ -1895,7 +2166,7 @@ const auth = getAuth(fbApp);
     var allQ = [];
     (Array.isArray(raw.sections) ? raw.sections : []).forEach(function(sec, si){
       var title = String(sec && sec.title!=null ? sec.title : '').trim();
-      var label = title || ('大問'+(si+1));
+      var label = title || ('第'+(si+1)+'問');
       var outSec = { id:uid('sec'), title:title, questions:[] };
       if(!sec || !Array.isArray(sec.questions) || sec.questions.length===0){
         errors.push(label+'：questions（問題の配列）がありません');
@@ -2109,7 +2380,7 @@ const auth = getAuth(fbApp);
       '3) complete（完全解答）: 複数の解答欄がすべて合って初めて得点になる問題。points は問題側ではなく groups 側に書く（問題側は 0 にする）。同じ組の問題には同じ groupId を付ける。',
       '   {"no":"21","type":"complete","groupId":"g21","points":0}',
       '',
-      'choices は基本的に null でよい。教科ごとのマーク欄（数学: ー,0〜9 ／ 英国社: 1〜9 ／ 理科: 1〜9,0,a,b ／ 情報: 0〜9,a〜f）がアプリ側で自動的に使われる。マーク欄がそれより少ない問題だけ、先頭から数えた個数を書く。',
+      'choices は基本的に null でよい。教科ごとのマーク欄（数学: ー,0〜9 ／ 英語・国語・社会: 1〜9 ／ 理科: 1〜9,0,a,b ／ 情報: 0〜9,a〜f）がアプリ側で自動的に使われる。マーク欄がそれより少ない問題だけ、先頭から数えた個数を書く。',
       '',
       '【完全解答グループ groups】',
       '- 組み合わせが順不同で判定される場合は mode を "combo" にして、正解の組み合わせを combos に書く。並べ替えは自動で同一視されるので、並び替えを全部書く必要はない。別の組み合わせも正解になる場合だけ複数書く。',
@@ -2604,6 +2875,25 @@ const auth = getAuth(fbApp);
         setState({adminDeleteYear:null});
       }});
     },
+    setTrendMode: function(el){ var m = el.dataset.mode; setState({trendMode: (m==='dashboard' || m==='heatmap') ? m : 'chart'}); },
+    applyHeat: function(){
+      if(heatFilterIsEmpty()) return;
+      var f = state.filters.heat;
+      state.heat.applied = { text:(f.text||'').trim(), tags:(f.tags||[]).slice() };
+      render();
+    },
+    applyDash: function(){
+      if(dashFilterIsEmpty()) return;
+      var f = state.filters.dash;
+      state.dash.applied = { text:(f.text||'').trim(), tags:(f.tags||[]).slice() };
+      render();
+    },
+    toggleDashMetric: function(el){
+      var k = el.dataset.metric;
+      if(!Object.prototype.hasOwnProperty.call(state.dash.metrics, k)) return;
+      state.dash.metrics[k] = !state.dash.metrics[k];
+      render();
+    },
     toggleFilterPanel: function(el){
       var f = state.filters[el.dataset.scope];
       if(!f) return;
@@ -2658,6 +2948,8 @@ const auth = getAuth(fbApp);
     if(el && el.dataset.filterInput && state.user){
       var scope = el.dataset.scope;
       if(scope==='trend'){ drawTrendChart(); }
+      else if(scope==='dash'){ refreshDashControls(); }
+      else if(scope==='heat'){ refreshHeatControls(); }
       else {
         var body = document.getElementById(scope==='past' ? 'pastListBody' : 'examListBody');
         if(body) body.innerHTML = scope==='past' ? renderPastListBody() : renderExamListBody();
