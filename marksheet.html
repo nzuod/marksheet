@@ -990,8 +990,17 @@ const auth = getAuth(fbApp);
         + '</div>'
         + (open ? '<div class="tag-panel">'+chips+'</div>' : '')) : '');
   }
+  // 自分の提出結果。模試名・タグは提出時のコピーではなく、今の模試の内容を優先して表示する
+  // （管理者が模試のタグや名前を直すと、過去の結果・成績推移にもそのまま反映される）。
+  // 模試が非公開・削除などで手元に無いときだけ、提出時に保存した値を使う。キャッシュは書き換えない。
   function myAllSubs(){
-    return getSubs().filter(function(s){ return state.user && s.studentKey===state.user.key; });
+    var examById = {};
+    getExams().forEach(function(e){ examById[e.id] = e; });
+    return getSubs().filter(function(s){ return state.user && s.studentKey===state.user.key; }).map(function(s){
+      var ex = examById[s.examId];
+      if(!ex) return s;
+      return Object.assign({}, s, { examName: ex.name || s.examName, examTags: (ex.tags||[]).slice() });
+    });
   }
 
   // ---- 成績推移（過去の結果をタイトル・タグで絞り込み、提出日時順に並べる） ----
